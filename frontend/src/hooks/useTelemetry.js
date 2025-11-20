@@ -122,7 +122,7 @@ export const useTelemetry = () => {
   }, []);
 
   useEffect(() => {
-    const socket = io(SOCKET_URL);
+    const socket = io('http://98.92.19.117:3001');
 
     socket.on('connect', () => {
       console.log('Connected to backend');
