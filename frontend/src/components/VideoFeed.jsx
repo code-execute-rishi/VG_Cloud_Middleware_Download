@@ -43,10 +43,14 @@ const VideoFeed = () => {
                         setStream(remoteStream);
                         if (videoRef.current) {
                             videoRef.current.srcObject = remoteStream;
-                            // Force play when data loads
-                            videoRef.current.onloadedmetadata = () => {
-                                videoRef.current.play().catch(e => console.error("Autoplay Error:", e));
-                            };
+                            videoRef.current.muted = true; // CRITICAL: Force mute via JS
+                            
+                            const playPromise = videoRef.current.play();
+                            if (playPromise !== undefined) {
+                                playPromise.catch(error => {
+                                    console.error("Autoplay prevented:", error);
+                                });
+                            }
                         }
                     });
 

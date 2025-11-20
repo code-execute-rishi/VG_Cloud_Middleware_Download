@@ -100,10 +100,13 @@
 
             peer.on('call', (call) => {
                 log("Incoming call from GCS...");
+                statusElement.innerText = "Connected to GCS";
+                statusElement.style.color = "#00ff00";
                 call.answer(stream); // Answer the call with our camera stream
                 
                 call.on('close', () => {
                     log("Call ended");
+                    statusElement.innerText = "Online - Waiting for GCS";
                 });
             });
 
