@@ -39,10 +39,14 @@ const VideoFeed = () => {
                 if (callObj) {
                     callObj.on('stream', (remoteStream) => {
                         console.log('Received drone stream');
+                        console.log('Stream tracks:', remoteStream.getTracks());
                         setStream(remoteStream);
                         if (videoRef.current) {
                             videoRef.current.srcObject = remoteStream;
-                            videoRef.current.play().catch(e => console.error("Error playing video:", e));
+                            // Force play when data loads
+                            videoRef.current.onloadedmetadata = () => {
+                                videoRef.current.play().catch(e => console.error("Autoplay Error:", e));
+                            };
                         }
                     });
 
