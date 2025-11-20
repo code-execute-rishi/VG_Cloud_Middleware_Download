@@ -26,20 +26,14 @@ const VideoFeed = () => {
                 console.log('My peer ID is: ' + id);
                 setPeerId(id);
 
+                // Create a dummy stream using a canvas to satisfy PeerJS requirements
+                const canvas = document.createElement('canvas');
+                canvas.width = 1;
+                canvas.height = 1;
+                const dummyStream = canvas.captureStream(10); // 10 FPS
+
                 // Immediately call the drone
                 console.log('Calling drone-cam-001...');
-                const call = peer.call('drone-cam-001', new MediaStream()); // Send empty stream or just receive?
-                // Note: To receive only, we can just call. But usually we need to send something or answer.
-                // PeerJS documentation: peer.call(id, stream). 
-                // We can send a dummy stream or no stream if the other side supports it.
-                // However, standard WebRTC often requires a stream to be sent to establish connection easily.
-                // Let's try calling with a dummy audio track or just handle the answer.
-                
-                // Actually, for one-way streaming, the GCS calls the Drone.
-                // The Drone answers with its stream.
-                // The GCS might need to send at least a dummy stream or null.
-                // Let's try sending a dummy stream to ensure connection negotiation works.
-                const dummyStream = new MediaStream();
                 const callObj = peer.call('drone-cam-001', dummyStream);
 
                 if (callObj) {
