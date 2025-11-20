@@ -17,7 +17,7 @@ const VideoFeed = () => {
             // Initialize PeerJS
             // We use a random ID for the GCS client, but we connect to the known Drone ID
             const peer = new Peer(null, { 
-                host: 'localhost',
+                host: '98.92.19.117',
                 port: 9000,
                 path: '/'
             });

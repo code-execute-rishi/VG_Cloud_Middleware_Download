@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
 
-const socket = io('http://172.25.119.168:3001');// ArduCopter Mode Mapping
+const socket = io('http://98.92.19.117:3001');
+
+// ArduCopter Mode Mapping
 const FLIGHT_MODES = {
   0: 'STABILIZE',
   1: 'ACRO',
