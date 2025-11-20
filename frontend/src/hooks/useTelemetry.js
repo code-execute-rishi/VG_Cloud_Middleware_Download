@@ -1,9 +1,23 @@
+/**
+ * useTelemetry Hook
+ * 
+ * This custom React hook manages the real-time telemetry state of the application.
+ * It connects to the backend via Socket.io and updates the state based on incoming MAVLink data.
+ * 
+ * Features:
+ * - Real-time state updates for Attitude, GPS, Battery, and Flight Mode.
+ * - Calculates derived metrics: Distance Travelled, Bearing to Home, Flight Time.
+ * - Manages a log of system messages (STATUSTEXT).
+ * 
+ * @returns {Object} { telemetry, logs } - The current state and log history.
+ */
+
 import { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
 
 const socket = io('http://98.92.19.117:3001');
 
-// ArduCopter Mode Mapping
+// ArduCopter Mode Mapping (Custom Mode ID -> String Name)
 const FLIGHT_MODES = {
   0: 'STABILIZE',
   1: 'ACRO',
@@ -33,6 +47,7 @@ const FLIGHT_MODES = {
 };
 
 export const useTelemetry = () => {
+  // Main Telemetry State
   const [telemetry, setTelemetry] = useState({
     lat: 0,
     lon: 0,
@@ -53,7 +68,7 @@ export const useTelemetry = () => {
     groundspeed: 0,
     sensors: 0,
     connected: false,
-    // New Metrics
+    // Derived Metrics
     home_position: null, // { lat, lon }
     distance_travelled: 0, // meters
     bearing_to_home: 0, // degrees
@@ -71,7 +86,14 @@ export const useTelemetry = () => {
     armed: false
   });
 
-  // Helper: Haversine Distance (meters)
+  /**
+   * Calculate Haversine Distance between two coordinates
+   * @param {number} lat1 
+   * @param {number} lon1 
+   * @param {number} lat2 
+   * @param {number} lon2 
+   * @returns {number} Distance in meters
+   */
   const getDistance = (lat1, lon1, lat2, lon2) => {
     const R = 6371e3; // Earth radius in meters
     const φ1 = lat1 * Math.PI / 180;
@@ -86,7 +108,10 @@ export const useTelemetry = () => {
     return R * c;
   };
 
-  // Helper: Bearing (degrees)
+  /**
+   * Calculate Bearing from Point A to Point B
+   * @returns {number} Bearing in degrees (0-360)
+   */
   const getBearing = (lat1, lon1, lat2, lon2) => {
     const φ1 = lat1 * Math.PI / 180;
     const φ2 = lat2 * Math.PI / 180;
@@ -99,7 +124,7 @@ export const useTelemetry = () => {
     return (θ * 180 / Math.PI + 360) % 360;
   };
 
-  // Flight Timer Effect
+  // Effect: Flight Timer Logic
   useEffect(() => {
     const timer = setInterval(() => {
       if (stateRef.current.armed) {
@@ -121,6 +146,7 @@ export const useTelemetry = () => {
     return () => clearInterval(timer);
   }, []);
 
+  // Effect: Socket.io Connection & Event Handling
   useEffect(() => {
     const socket = io('http://98.92.19.117:3001');
 
@@ -140,6 +166,7 @@ export const useTelemetry = () => {
       setTelemetry(prev => {
         const newState = { ...prev };
         
+        // Process Heartbeat
         if (data.heartbeat) {
           newState.flight_mode = FLIGHT_MODES[data.heartbeat.custom_mode] || `MODE ${data.heartbeat.custom_mode}`;
           // Base mode bitmask: 128 = Safety Armed
@@ -148,6 +175,7 @@ export const useTelemetry = () => {
           stateRef.current.armed = isArmed;
         }
 
+        // Process Global Position
         if (data.global_position_int) {
           const lat = data.global_position_int.lat;
           const lon = data.global_position_int.lon;
@@ -193,12 +221,14 @@ export const useTelemetry = () => {
           }
         }
 
+        // Process Attitude
         if (data.attitude) {
           newState.roll = data.attitude.roll;
           newState.pitch = data.attitude.pitch;
           newState.yaw = data.attitude.yaw;
         }
 
+        // Process System Status
         if (data.sys_status) {
           newState.voltage = data.sys_status.voltage;
           newState.battery_remaining = data.sys_status.battery_remaining;
@@ -206,11 +236,13 @@ export const useTelemetry = () => {
           newState.sensors = data.sys_status.sensors;
         }
 
+        // Process GPS Raw
         if (data.gps_raw_int) {
           newState.gps_fix = data.gps_raw_int.fix_type;
           newState.satellites = data.gps_raw_int.satellites_visible;
         }
 
+        // Process HUD
         if (data.vfr_hud) {
           newState.airspeed = data.vfr_hud.airspeed;
           newState.groundspeed = data.vfr_hud.groundspeed;
