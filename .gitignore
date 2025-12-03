@@ -38,3 +38,11 @@ Thumbs.db
 
 # Agent Instructions
 AGENT_INSTRUCTIONS.md
+
+# Go
+vendor/
+*.ivf
+device-middleware/device-middleware
+backend/vyom-backend
+test_pipe
+

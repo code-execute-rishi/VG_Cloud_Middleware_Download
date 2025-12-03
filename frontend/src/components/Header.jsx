@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 
 const Header = ({ telemetry }) => {
-  // Helper to format battery color
+  // Helper to format battery color 
   const getBatteryColor = (level) => {
     if (level > 70) return 'text-green-500';
     if (level > 30) return 'text-yellow-500';
