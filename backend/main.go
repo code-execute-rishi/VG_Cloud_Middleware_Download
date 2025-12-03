@@ -15,8 +15,6 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/livekit/protocol/auth"
 	"github.com/rs/cors"
-
-	"vyom-backend/middleware"
 )
 
 // --- Configuration ---

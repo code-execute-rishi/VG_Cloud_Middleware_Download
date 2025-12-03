@@ -6,7 +6,7 @@ After=network.target zerotier-one.service
 User=root
 WorkingDirectory=/root/gcs-app
 EnvironmentFile=/root/gcs-app/.env
-ExecStart=/usr/local/go/bin/go run /root/gcs-app/main.go
+ExecStart=/usr/local/go/bin/go run /root/gcs-app/backend/main.go
 Restart=always
 RestartSec=5
 
