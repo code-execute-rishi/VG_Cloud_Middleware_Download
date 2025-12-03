@@ -4,9 +4,9 @@ After=network.target zerotier-one.service
 
 [Service]
 User=ubuntu
-WorkingDirectory=/home/ubuntu/gcs-production
+WorkingDirectory=/home/ubuntu/gcs-production/backend
 EnvironmentFile=/home/ubuntu/gcs-production/backend/.env
-ExecStart=/snap/bin/go run /home/ubuntu/gcs-production/backend/main.go
+ExecStart=/snap/bin/go run .
 Restart=always
 RestartSec=5
 
