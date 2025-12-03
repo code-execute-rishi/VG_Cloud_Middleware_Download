@@ -1,0 +1,14 @@
+[Unit]
+Description=VyomGarud GCS Frontend
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory=/root/gcs-app/frontend
+# Install serve globally first: npm install -g serve
+ExecStart=/usr/bin/npx serve -s dist -l 3000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
