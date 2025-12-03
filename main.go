@@ -26,10 +26,17 @@ import (
 
 // --- Configuration ---
 const (
-	AuthAPIURL     = "http://localhost:8080/api/v1/devices/auth"
 	MAVLinkAddress = "udp://:14550"
 	PollInterval   = 3 * time.Second
 )
+
+var AuthAPIURL = "http://localhost:8080/api/v1/devices/auth"
+
+func init() {
+	if url := os.Getenv("BACKEND_URL"); url != "" {
+		AuthAPIURL = url + "/api/v1/devices/auth"
+	}
+}
 
 // --- Data Structures ---
 
@@ -117,7 +124,11 @@ func main() {
 
 	// Retry loop for announcement
 	// Announce Device (Synchronous First Attempt)
-	announceURL := "http://localhost:8080/api/v1/devices/announce"
+	baseURL := "http://localhost:8080"
+	if url := os.Getenv("BACKEND_URL"); url != "" {
+		baseURL = url
+	}
+	announceURL := baseURL + "/api/v1/devices/announce"
 	log.Println("Announcing device to backend...")
 	resp, err := client.Post(announceURL, "application/json", bytes.NewBuffer(announceBody))
 	if err == nil && resp.StatusCode == http.StatusOK {
@@ -253,10 +264,15 @@ func main() {
 				"-i", "/dev/video0",
 				"-c:v", "libvpx",
 				"-b:v", "500k",
-				"-r", "30", // Force 30 fps
-				"-bufsize", "500k", // Constrain buffer
-				"-cpu-used", "5", // Increase encoding speed for realtime
-				"-g", "30", // Keyframe every 30 frames (1 sec)
+				"-minrate", "500k",
+				"-maxrate", "500k",
+				"-r", "30",
+				"-bufsize", "50k", // Extremely small buffer
+				"-cpu-used", "8", // Max speed for realtime
+				"-g", "10", // Keyframe every ~0.3s
+				"-qmin", "4",
+				"-qmax", "40",
+				"-static-thresh", "0", // CRITICAL: Disable static frame skipping
 				"-lag-in-frames", "0",
 				"-error-resilient", "1",
 				"-auto-alt-ref", "0",
