@@ -10,7 +10,7 @@ import (
 )
 
 type ClaimDeviceRequest struct {
-	PairCode string `json:"pair_code"`
+	PairCode int64 `json:"pair_code"`
 }
 
 type ClaimDeviceResponse struct {
@@ -53,8 +53,8 @@ func HandleClaimDevice(w http.ResponseWriter, r *http.Request) {
 	storeMutex.RUnlock()
 
 	if !exists {
-		// Fallback for "GCS-9000" if user still wants to use it (optional, but good for testing)
-		if req.PairCode == "GCS-9000" {
+		// Fallback for Debug (optional)
+		if req.PairCode == 9000 {
 			// Allow Admin Override
 		} else {
 			sendError(w, "Device not found. Ensure middleware is running.", http.StatusUnauthorized)
@@ -66,7 +66,7 @@ func HandleClaimDevice(w http.ResponseWriter, r *http.Request) {
 		deviceStore[req.PairCode] = pendingDevice
 		delete(pendingStore, req.PairCode)
 		storeMutex.Unlock()
-		log.Printf("Device %s promoted from Pending to Claimed via UI", req.PairCode)
+		log.Printf("Device %d promoted from Pending to Claimed via UI", req.PairCode)
 	}
 
 	// Generate LiveKit Token
@@ -80,10 +80,10 @@ func HandleClaimDevice(w http.ResponseWriter, r *http.Request) {
 		Room:           "sim-room-01",
 		CanPublish:     boolPtr(true),
 		CanSubscribe:   boolPtr(true),
-		CanPublishData: boolPtr(true), // Specifically requested
+		CanPublishData: boolPtr(true),
 	}
 
-	// Identity can be dynamic, but using a fixed one for the GCS user for now
+	// Identity can be dynamic
 	at.AddGrant(grant).SetIdentity("gcs-commander").SetValidFor(24 * time.Hour)
 
 	token, err := at.ToJWT()

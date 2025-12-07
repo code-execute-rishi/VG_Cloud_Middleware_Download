@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -30,28 +31,28 @@ var (
 
 // --- Data Store ---
 type Device struct {
-	PairingCode string
+	PairingCode int64
 	PublicKey   ed25519.PublicKey
 	ClaimedAt   time.Time
 }
 
 var (
-	deviceStore  = make(map[string]Device) // Key: PairingCode (which acts as DeviceID for now)
-	pendingStore = make(map[string]Device) // Key: PairingCode (Pending devices)
+	deviceStore  = make(map[int64]Device) // Key: PairingCode (which acts as DeviceID for now)
+	pendingStore = make(map[int64]Device) // Key: PairingCode (Pending devices)
 	storeMutex   sync.RWMutex
-	challenges   = make(map[string]string) // Key: DeviceID, Value: Challenge
+	challenges   = make(map[string]string) // Key: DeviceID (string), Value: Challenge
 	chalMutex    sync.Mutex
 )
 
 // --- API Structures ---
 
 type ClaimRequest struct {
-	PairingCode string `json:"pairing_code"`
+	PairingCode int64  `json:"pairing_code"`
 	PublicKey   string `json:"public_key"` // Hex encoded
 }
 
 type AnnounceRequest struct {
-	PairingCode string `json:"pairing_code"`
+	PairingCode int64  `json:"pairing_code"`
 	PublicKey   string `json:"public_key"` // Hex encoded
 }
 
@@ -107,7 +108,7 @@ func handleAnnounce(w http.ResponseWriter, r *http.Request) {
 	}
 	storeMutex.Unlock()
 
-	log.Printf("Device announced: %s", req.PairingCode)
+	log.Printf("Device announced: %d", req.PairingCode)
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "announced"})
 }
@@ -133,7 +134,7 @@ func handleClaim(w http.ResponseWriter, r *http.Request) {
 	}
 	storeMutex.Unlock()
 
-	log.Printf("Device claimed: %s", req.PairingCode)
+	log.Printf("Device claimed: %d", req.PairingCode)
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "claimed"})
 }
@@ -145,19 +146,24 @@ func handleChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Helper: Convert string ID to int for lookup if numeric
+	var deviceIDInt int64
+	var exists bool
+
+	// Parse DeviceID as int (assuming pairing code is used as ID)
+	_, err := fmt.Sscanf(req.DeviceID, "%d", &deviceIDInt)
+	if err != nil {
+		// If fails to parse, maybe it's not a numeric ID.
+		// In this specific flow, ID SHOULD be numeric.
+		http.Error(w, "Invalid Device ID format", http.StatusBadRequest)
+		return
+	}
+
 	storeMutex.RLock()
-	_, exists := deviceStore[req.DeviceID]
+	_, exists = deviceStore[deviceIDInt]
 	storeMutex.RUnlock()
 
 	if !exists {
-		// For this simplified flow, we might want to auto-register or wait for claim.
-		// The prompt says "If it gets a 404, wait." implying the device must be claimed first.
-		// However, the device middleware sends the pairing code as device_id.
-		// If the user hasn't claimed it yet via a (hypothetical) UI, we return 404.
-		// BUT, for the sake of this task, let's assume the "Claim Phase" happens via a separate manual step
-		// or we can auto-register for testing if needed.
-		// The prompt says: "Stores the key if the code is valid." in /claim.
-		// So /challenge should return 404 if not found.
 		http.Error(w, "Device not found", http.StatusNotFound)
 		return
 	}
@@ -181,8 +187,11 @@ func handleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var deviceIDInt int64
+	fmt.Sscanf(req.DeviceID, "%d", &deviceIDInt)
+
 	storeMutex.RLock()
-	device, exists := deviceStore[req.DeviceID]
+	device, exists := deviceStore[deviceIDInt]
 	storeMutex.RUnlock()
 
 	if !exists {
@@ -266,6 +275,84 @@ func handleLiveKitTokens(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleClaimDevice processes the user's request to claim a pending device.
+// Input: { "pair_code": 12345 }
+// Logic: Checks pendingStore. If found, moves to deviceStore. Returns LiveKit token.
+func handleClaimDevice(w http.ResponseWriter, r *http.Request) {
+	// 1. Parse Input
+	var req struct {
+		PairCode int64 `json:"pair_code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	storeMutex.Lock()
+	defer storeMutex.Unlock()
+
+	// 2. Check Pending Store
+	device, exists := pendingStore[req.PairCode]
+	if !exists {
+		// Check if it's already claimed just in case
+		if _, claimed := deviceStore[req.PairCode]; claimed {
+			http.Error(w, "Device already claimed", http.StatusConflict)
+		} else {
+			http.Error(w, "Device not found or not announcing", http.StatusNotFound)
+		}
+		return
+	}
+
+	// 3. Move to Device Store
+	deviceStore[req.PairCode] = device
+	delete(pendingStore, req.PairCode)
+	log.Printf("Device %d claimed by user!", req.PairCode)
+
+	// 4. Generate LiveKit Token for the *User* (Viewer)
+	at := auth.NewAccessToken(LiveKitAPIKey, LiveKitAPISecret)
+
+	// Helper for bool pointer
+	boolPtr := func(b bool) *bool { return &b }
+
+	// Grant permissions to join the room associated with this device.
+	// NOTE: For this simple implementation, we assume all devices go to "sim-room-01"
+	// or we could make the room name dynamic based on the pair code (e.g. "room-<pair_code>")
+	// matching what the device middleware will eventually join.
+	// The prompt implies the device joins a room. The *device middleware* currently hardcodes "sim-room-01" in `handleVerify` (wait, no, `handleVerify` in backend sets it).
+	// Let's check `handleVerify` in file view...
+	// Line 221: Room: "sim-room-01"
+	// So both device and user should join "sim-room-01".
+
+	roomName := "sim-room-01"
+	identity := fmt.Sprintf("user-%d-%s", req.PairCode, time.Now().Format("150405"))
+
+	grant := &auth.VideoGrant{
+		RoomJoin:     true,
+		Room:         roomName,
+		CanPublish:   boolPtr(false), // User is viewer/controller, usually doesn't publish video? Or maybe yes for voice?
+		CanSubscribe: boolPtr(true),
+	}
+	at.AddGrant(grant).SetIdentity(identity).SetValidFor(24 * time.Hour)
+
+	token, err := at.ToJWT()
+	if err != nil {
+		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+		return
+	}
+
+	// 5. Response
+	resp := struct {
+		Token string `json:"token"`
+		URL   string `json:"url"`
+	}{
+		Token: token,
+		URL:   LiveKitURL,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
 // --- Main ---
 
 func main() {
@@ -299,7 +386,7 @@ func main() {
 	mux.HandleFunc("/api/v1/devices/auth/verify", handleVerify)
 
 	// New Claim Endpoint (Task 1)
-	mux.HandleFunc("/api/claim-device", HandleClaimDevice)
+	mux.HandleFunc("/api/claim-device", handleClaimDevice)
 
 	// Frontend Routes
 	mux.HandleFunc("/api/v1/livekit/tokens", handleLiveKitTokens)
