@@ -1,109 +1,214 @@
-import { useState, useEffect } from 'react';
-import './App.css';
+import React, { useState, useEffect } from "react";
+import "./App.css";
 
 function App() {
-  const [data, setData] = useState({ pairing_code: 'loading...', status: 'CONNECTING', resolution: '640x480' });
-  const [targetRes, setTargetRes] = useState('640x480');
-  const [isChanging, setIsChanging] = useState(false);
+  const [activeTab, setActiveTab] = useState("device");
+  const [rebooting, setRebooting] = useState(false);
+  const [systemInfo, setSystemInfo] = useState(null);
+
+  const [formData, setFormData] = useState({
+    ssid: "",
+    password: "",
+    resolution: "640x480",
+  });
 
   useEffect(() => {
-    // Poll Status
-    const interval = setInterval(() => {
-      fetch('/api/status')
-        .then(res => res.json())
-        .then(json => {
-          // If we are currently changing, don't overwrite resolution immediately
-          // wait for it specifically or just show what backend says?
-          // Let's show what backend says, but if we just clicked, we might see the old one for a sec.
-          // That's fine, the button active state can reflect 'targetRes'.
-          setData(json);
-        })
-        .catch(err => console.error("Poll failed", err));
-    }, 1000);
-
-    return () => clearInterval(interval);
+    const fetchInfo = async () => {
+      try {
+        const res = await fetch("/api/system-info");
+        const data = await res.json();
+        setSystemInfo(data);
+      } catch (err) {
+        console.error("Failed to fetch info", err);
+      }
+    };
+    fetchInfo();
   }, []);
 
-  const handleConfigChange = (res) => {
-    if (isChanging) return;
-    setIsChanging(true);
-    setTargetRes(res);
-
-    // Determine bitrate based on resolution (simple logic)
-    let bitrate = "500k";
-    if (res === "1280x720") bitrate = "2000k";
-    if (res === "1920x1080") bitrate = "4000k";
-
-    fetch('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ resolution: res, bitrate: bitrate })
-    })
-      .then(() => {
-        // Optimistic update done, wait for poll to confirm
-        setTimeout(() => setIsChanging(false), 2000);
-      })
-      .catch(err => {
-        console.error("Config failed", err);
-        setIsChanging(false);
-      });
+  const handleInputChange = (e) => {
+    const { name, value } = e.target;
+    setFormData((prev) => ({
+      ...prev,
+      [name]: value,
+    }));
   };
 
-  // Status Colors: Connected = Green, Waiting = Amber (but using class text-waiting defined in CSS)
-  const statusColor = data.status === 'CONNECTED' ? 'text-green-500' : 'text-waiting';
-  const statusBlink = data.status === 'WAITING' ? 'animate-pulse' : '';
+  const handleBindDevice = async () => {
+    try {
+      setRebooting(true);
+      const res = await fetch("/api/save-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(formData),
+      });
+
+      if (!res.ok) throw new Error("Failed to save");
+    } catch (err) {
+      alert("Error saving configuration: " + err.message);
+      setRebooting(false);
+    }
+  };
+
+  if (rebooting) {
+    return (
+      <div className="container center-content">
+        <div className="card reboot-card">
+          <div className="spinner"></div>
+          <h2>Rebooting...</h2>
+          <p>Your device is restarting to apply changes.</p>
+          <p className="sub-text">Please reconnect to the new network.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="hud-container">
-      {/* HUD Corners */}
-      <div className="corner top-left"></div>
-      <div className="corner top-right"></div>
-      <div className="corner bottom-left"></div>
-      <div className="corner bottom-right"></div>
-
-      {/* Main Content */}
-      <div className="hud-content">
-        <header className="hud-header">
-          <h1>VYOM GARUD <span className="text-xs">SYSTEMS</span></h1>
-          <div className={`status-indicator ${statusColor} ${statusBlink}`}>
-            ● {data.status}
+    <div className="app-container">
+      {/* Header */}
+      <header className="top-bar">
+        <div className="logo-section">
+          <div className="logo-icon">📡</div>
+          <div className="logo-text">
+            <h1>Vyom Device Setup</h1>
+            <p className="subtitle">Bind this device to your cloud account</p>
           </div>
-        </header>
+        </div>
+      </header>
 
-        <main>
-          <div className="data-block mt-10">
-            <label>PAIRING CODE</label>
-            <div className="pairing-code glitch" data-text={data.pairing_code}>
-              {data.pairing_code}
+      {/* Tabs */}
+      <nav className="tabs">
+        <button
+          className={`tab-btn ${activeTab === "device" ? "active" : ""}`}
+          onClick={() => setActiveTab("device")}
+        >
+          <span className="icon">📱</span> Device
+        </button>
+        <button
+          className={`tab-btn ${activeTab === "wifi" ? "active" : ""}`}
+          onClick={() => setActiveTab("wifi")}
+        >
+          <span className="icon">📶</span> WiFi
+        </button>
+        <button
+          className={`tab-btn ${activeTab === "net" ? "active" : ""}`}
+          onClick={() => setActiveTab("net")}
+        >
+          <span className="icon">🌐</span> Net
+        </button>
+      </nav>
+
+      {/* Content */}
+      <main className="main-content">
+
+        {activeTab === "device" && (
+          <div className="card bind-card">
+            <div className="icon-large">↪️</div>
+            <h2>Bind Device to Your Account</h2>
+            <p>
+              To start using your Vyom device, you need to bind it to your account.
+              This will enable all features and remote management.
+            </p>
+
+            <div className="info-row">
+              <span className="info-label">Device ID:</span>
+              <span className="info-value">{systemInfo?.device_id || "Loading..."}</span>
+            </div>
+            <div className="info-row">
+              <span className="info-label">Pairing Code:</span>
+              <span className="info-value code">{systemInfo?.pairing_code || "---"}</span>
+            </div>
+
+            <div className="status-badge">
+              Requires internet connection
+            </div>
+
+            <button className="btn-primary" onClick={handleBindDevice}>
+              <span className="btn-icon">↪️</span> Bind Device Now
+            </button>
+
+            <div className="help-link">Having trouble binding?</div>
+            <div className="destructive-link">🗑️ Clear Device Credentials</div>
+          </div>
+        )}
+
+        {activeTab === "wifi" && (
+          <div className="card form-card">
+            <div className="card-header">
+              <h3>WiFi Configuration</h3>
+              <button className="btn-small">⚙️ Configure</button>
+            </div>
+            <p className="card-desc">Configure local network settings for internet access.</p>
+
+            <div className="form-group">
+              <label>SSID (Network Name)</label>
+              <input
+                type="text"
+                name="ssid"
+                value={formData.ssid}
+                onChange={handleInputChange}
+                placeholder="Enter WiFi Name"
+              />
+            </div>
+
+            <div className="form-group">
+              <label>Password</label>
+              <input
+                type="password"
+                name="password"
+                value={formData.password}
+                onChange={handleInputChange}
+                placeholder="Enter WiFi Password"
+              />
+            </div>
+
+            <div className="form-group">
+              <label>Camera Resolution</label>
+              <select name="resolution" value={formData.resolution} onChange={handleInputChange}>
+                <option value="640x480">480p</option>
+                <option value="1280x720">720p</option>
+                <option value="1920x1080">1080p</option>
+              </select>
             </div>
           </div>
+        )}
 
-          <div className="data-block mt-8">
-            <label>CAMERA CONFIG</label>
-            <div className="control-group">
-              {['640x480', '1280x720', '1920x1080'].map((res) => (
-                <button
-                  key={res}
-                  className={`hud-btn ${targetRes === res ? 'active' : ''}`}
-                  onClick={() => handleConfigChange(res)}
-                  disabled={isChanging}
-                  style={{ opacity: isChanging && targetRes !== res ? 0.5 : 1 }}
-                >
-                  {res}
-                </button>
-              ))}
+        {activeTab === "net" && (
+          <div className="card list-card">
+            <div className="card-header">
+              <h3>Network Interfaces</h3>
+              <span className="badge">3 devices</span>
             </div>
-            <div className="text-xs text-slate-500 mt-2">
-              ACTIVE SOURCE: {data.resolution} {isChanging ? '(UPDATING...)' : ''}
+
+            <div className="list-item">
+              <div className="item-icon">💻</div>
+              <div className="item-details">
+                <span className="item-title">lo</span>
+                <span className="item-sub">127.0.0.1</span>
+              </div>
+              <span className="tag connected">Connected</span>
+            </div>
+
+            <div className="list-item">
+              <div className="item-icon">🔌</div>
+              <div className="item-details">
+                <span className="item-title">eth0</span>
+                <span className="item-sub">192.168.1.5</span>
+              </div>
+              <span className="tag connected">Connected</span>
+            </div>
+
+            <div className="list-item">
+              <div className="item-icon">📡</div>
+              <div className="item-details">
+                <span className="item-title">wlan0</span>
+                <span className="item-sub">Scanning...</span>
+              </div>
+              <span className="tag">Disconnected</span>
             </div>
           </div>
-        </main>
+        )}
 
-        <footer className="hud-footer">
-          <div>LOC: 35.36, 149.16</div>
-          <div>ALT: 10m</div>
-        </footer>
-      </div>
+      </main>
     </div>
   );
 }

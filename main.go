@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -25,9 +26,11 @@ import (
 	ivfreader "github.com/pion/webrtc/v4/pkg/media/ivfreader"
 )
 
-// --- Configuration ---
+// --- Configuration Constants ---
 const (
-	MAVLinkAddress = "udp://:14550"
+	ConfigFileName = "demo_config.json"
+	SetupPort      = ":8080"
+	MavlinkAddress = "udp://:14550"
 	PollInterval   = 3 * time.Second
 )
 
@@ -41,13 +44,20 @@ func init() {
 
 // --- Data Structures ---
 
+// ConfigFile represents the local configuration structure
+type ConfigFile struct {
+	SSID       string `json:"ssid"`
+	Password   string `json:"password"`
+	Resolution string `json:"resolution"`
+}
+
 // TelemetryPayload matches the JSON structure required by the frontend
 type TelemetryPayload struct {
 	Timestamp         int64           `json:"timestamp"`
 	Attitude          *Attitude       `json:"attitude,omitempty"`
 	SysStatus         *SysStatus      `json:"sys_status,omitempty"`
 	GlobalPositionInt *GlobalPosition `json:"global_position_int,omitempty"`
-	Mode              string          `json:"mode,omitempty"` // Added Mode
+	Mode              string          `json:"mode,omitempty"`
 	Armed             bool            `json:"armed"`
 	GpsRawInt         *GpsRaw         `json:"gps_raw_int,omitempty"`
 }
@@ -108,12 +118,317 @@ var (
 	pairingCode      int64
 	isConnected      bool
 	statusMutex      sync.RWMutex
+	privKey          ed25519.PrivateKey // Store private key for auth
+	pubKeyHex        string             // Store public key for auth
 )
 
-// --- Camera Manager ---
+// --- MAIN ENTRY POINT ---
+
+func main() {
+	log.Println("Booting Drone Device Middleware...")
+
+	// 1. Generate/Load Identity (Mocking persistent identity for demo)
+	generateIdentity()
+
+	// 2. Check for Configuration
+	if _, err := os.Stat(ConfigFileName); os.IsNotExist(err) {
+		startSetupMode()
+	} else {
+		startMissionMode()
+	}
+}
+
+// --- SETUP MODE ---
+
+func startSetupMode() {
+	log.Println("\n=== SETUP MODE DETECTED ===")
+	log.Println("No configuration found. Starting Local Config Portal.")
+
+	ip := getOutboundIP()
+	log.Printf("\n>>> CONNECT YOUR PHONE HERE: http://%s%s <<<\n\n", ip, SetupPort)
+
+	// API Handlers
+	http.HandleFunc("/api/system-info", handleSystemInfo)
+	http.HandleFunc("/api/wifi-scan", handleWifiScan)
+	http.HandleFunc("/api/save-config", handleSaveConfig)
+
+	// Serve React Frontend
+	fs := http.FileServer(http.Dir("./ui/dist"))
+	http.Handle("/", fs)
+
+	log.Printf("Listening on %s...", SetupPort)
+	if err := http.ListenAndServe(SetupPort, corsMiddleware(http.DefaultServeMux)); err != nil {
+		log.Fatalf("Server failed: %v", err)
+	}
+}
+
+func handleSystemInfo(w http.ResponseWriter, r *http.Request) {
+	resp := map[string]interface{}{
+		"pairing_code": pairingCode,
+		"device_id":    fmt.Sprintf("DRONE-%d", pairingCode%1000), // Simple ID
+		"version":      "v1.0.0-beta",
+	}
+	jsonResponse(w, resp)
+}
+
+func handleWifiScan(w http.ResponseWriter, r *http.Request) {
+	// Mocked WiFi List
+	networks := []map[string]interface{}{
+		{"ssid": "Vyom-Office", "signal": 95, "secure": true},
+		{"ssid": "Guest-Network", "signal": 80, "secure": false},
+		{"ssid": "Pixel-Hotspot", "signal": 60, "secure": true},
+		{"ssid": "Area-51", "signal": 20, "secure": true},
+	}
+	time.Sleep(1 * time.Second) // Simulate scan delay
+	jsonResponse(w, networks)
+}
+
+func handleSaveConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var config ConfigFile
+	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Validate (Simple check)
+	if config.SSID == "" {
+		http.Error(w, "SSID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Save to file
+	file, _ := json.MarshalIndent(config, "", "  ")
+	if err := os.WriteFile(ConfigFileName, file, 0644); err != nil {
+		http.Error(w, "Failed to save config", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Configuration saved for SSID: %s. Rebooting...", config.SSID)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"success", "message":"Configuration saved. Rebooting..."}`))
+
+	// Trigger "Reboot" (Exit after short delay, expecting user/supervisor to restart)
+	// In a real device, we might exec.Command("reboot").
+	go func() {
+		time.Sleep(2 * time.Second)
+		log.Println("REBOOTING NOW...")
+		os.Exit(0)
+	}()
+}
+
+// --- MISSION MODE ---
+
+func startMissionMode() {
+	log.Println("\n=== MISSION MODE STARTED ===")
+
+	// Load Config
+	data, err := os.ReadFile(ConfigFileName)
+	if err != nil {
+		log.Fatalf("Failed to read config: %v", err)
+	}
+	var config ConfigFile
+	json.Unmarshal(data, &config)
+
+	if config.Resolution != "" {
+		cameraResolution = config.Resolution
+	}
+	log.Printf("Loaded Config: SSID=%s, Resolution=%s", config.SSID, cameraResolution)
+
+	// Since we are "connected" (mocked via Ethernet/Phone Hotspot), we proceed.
+
+	// Start Local Dashboard for debugging (on different port if needed, or same)
+	go func() {
+		// Just a simple status endpoint for mission mode
+		mux := http.NewServeMux()
+		mux.HandleFunc("/api/status", handleStatus)
+		// We could serve the same UI but maybe in a "Connected" state,
+		// but for now let's just expose the status API for external checks.
+		log.Println("Mission Monitor listening on :8081")
+		http.ListenAndServe(":8081", corsMiddleware(mux))
+	}()
+
+	// 1. Announce Device
+	announceDevice()
+
+	// 2. Auth Loop -> LiveKit
+	connectToLiveKit()
+}
+
+// --- Helpers & Logic ---
+
+func generateIdentity() {
+	var err error
+	var pubKey ed25519.PublicKey
+	pubKey, privKey, err = ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		log.Fatalf("Failed to generate keys: %v", err)
+	}
+	pubKeyHex = hex.EncodeToString(pubKey)
+
+	// Deterministic Pairing Code for Demo?
+	// Ideally we want this to be persistent but for this script it regenerates.
+	// That means if you reboot, the pairing code changes.
+	// For a better demo, let's cache the key or code, but for now we follow previous logic.
+
+	var codeVal uint64
+	fmt.Sscanf(pubKeyHex[:8], "%x", &codeVal)
+	pairingCode = int64(10000000 + (codeVal % 90000000))
+	fmt.Printf("DEVICE PAIRING CODE: %d\n", pairingCode)
+}
+
+func announceDevice() {
+	client := &http.Client{Timeout: 5 * time.Second}
+	announceBody, _ := json.Marshal(map[string]interface{}{
+		"pairing_code": pairingCode,
+		"public_key":   pubKeyHex,
+	})
+
+	baseURL := "http://localhost:8080"
+	if url := os.Getenv("BACKEND_URL"); url != "" {
+		baseURL = url
+	}
+	// Fix: If running in Mission Mode, the 'localhost' refers to where current process is running.
+	// If the backend is elsewhere, env var must be set.
+
+	announceURL := baseURL + "/api/v1/devices/announce"
+	// Update Main Auth URL
+	AuthAPIURL = baseURL + "/api/v1/devices/auth"
+
+	go func() {
+		for {
+			resp, err := client.Post(announceURL, "application/json", bytes.NewBuffer(announceBody))
+			if err == nil && resp.StatusCode == http.StatusOK {
+				log.Println("Device announced to Cloud Backend.")
+				resp.Body.Close()
+				break
+			}
+			if err != nil {
+				log.Printf("Announce failed (will retry): %v", err)
+			}
+			time.Sleep(3 * time.Second)
+		}
+	}()
+}
+
+func connectToLiveKit() {
+	client := &http.Client{Timeout: 5 * time.Second}
+	var token, lkURL string
+
+	for {
+		// Poll for challenge
+		resp, err := client.Post(AuthAPIURL+"/challenge", "application/json", bytes.NewBuffer([]byte(fmt.Sprintf(`{"device_id": "%d"}`, pairingCode))))
+		if err != nil {
+			log.Printf("Waiting for pairing... (%v)", err)
+			time.Sleep(PollInterval)
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			time.Sleep(PollInterval)
+			continue
+		}
+
+		var challengeResp ChallengeResponse
+		json.NewDecoder(resp.Body).Decode(&challengeResp)
+		resp.Body.Close()
+
+		signature := ed25519.Sign(privKey, []byte(challengeResp.Challenge))
+
+		verifyBody, _ := json.Marshal(VerifyRequest{
+			DeviceID:  fmt.Sprintf("%d", pairingCode),
+			Signature: hex.EncodeToString(signature),
+		})
+		vResp, err := client.Post(AuthAPIURL+"/verify", "application/json", bytes.NewBuffer(verifyBody))
+		if err != nil {
+			time.Sleep(PollInterval)
+			continue
+		}
+
+		if vResp.StatusCode == http.StatusOK {
+			var verifyResp VerifyResponse
+			json.NewDecoder(vResp.Body).Decode(&verifyResp)
+			token = verifyResp.Token
+			lkURL = verifyResp.URL
+			vResp.Body.Close()
+			break
+		}
+		vResp.Body.Close()
+		time.Sleep(PollInterval)
+	}
+
+	// Connect
+	log.Printf("Connecting to LiveKit: %s", lkURL)
+	room, err := lksdk.ConnectToRoomWithToken(lkURL, token, lksdk.NewRoomCallback())
+	if err != nil {
+		log.Fatalf("Failed to connect to LiveKit: %v", err)
+	}
+
+	log.Printf("Connected to Room: %s", room.Name())
+
+	statusMutex.Lock()
+	isConnected = true
+	statusMutex.Unlock()
+
+	startCamera(room)
+	runMavlink(room)
+}
+
+// --- Status & Utils ---
+
+func handleStatus(w http.ResponseWriter, r *http.Request) {
+	statusMutex.RLock()
+	status := "WAITING"
+	if isConnected {
+		status = "CONNECTED"
+	}
+	resp := map[string]interface{}{
+		"pairing_code": pairingCode,
+		"status":       status,
+		"resolution":   cameraResolution,
+	}
+	statusMutex.RUnlock()
+	jsonResponse(w, resp)
+}
+
+func getOutboundIP() string {
+	conn, err := net.Dial("udp", "8.8.8.8:80") // Connect to Google DNS (doesn't send data)
+	if err != nil {
+		return "127.0.0.1"
+	}
+	defer conn.Close()
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	return localAddr.IP.String()
+}
+
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func jsonResponse(w http.ResponseWriter, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(data)
+}
+
+// --- EXISTING CAMERA & MAVLINK CODE ---
 
 // startCamera starts the ffmpeg process and publishes to LiveKit.
-// It returns a context that is cancelled when the camera is stopped.
 func startCamera(room *lksdk.Room) {
 	cameraMutex.Lock()
 	defer cameraMutex.Unlock()
@@ -141,7 +456,6 @@ func startCamera(room *lksdk.Room) {
 		}
 
 		// Start ffmpeg
-		// Note: We avoid 'pkill' now and rely on Context cancellation to kill the specific process.
 		cmd := exec.CommandContext(ctx, "ffmpeg",
 			"-f", "v4l2",
 			"-video_size", cameraResolution,
@@ -176,9 +490,8 @@ func startCamera(room *lksdk.Room) {
 		// Process monitor
 		go func() {
 			if err := cmd.Wait(); err != nil {
-				// Only log if not cancelled
 				if ctx.Err() == nil {
-					log.Printf("ffmpeg exited unexpectedly: %v\nStderr: %s", err, stderr.String())
+					log.Printf("ffmpeg exited unexpectedly: %v", err)
 				}
 			}
 		}()
@@ -234,9 +547,8 @@ func startCamera(room *lksdk.Room) {
 				payload, _, err := ivf.ParseNextFrame()
 				if err != nil {
 					if err == io.EOF {
-						return // End of stream
+						return
 					}
-					// If pipe is broken
 					return
 				}
 				track.WriteSample(media.Sample{
@@ -246,210 +558,6 @@ func startCamera(room *lksdk.Room) {
 			}
 		}
 	}()
-}
-
-// --- HTTP Handlers ---
-
-func handleStatus(w http.ResponseWriter, r *http.Request) {
-	statusMutex.RLock()
-	status := "WAITING"
-	if isConnected {
-		status = "CONNECTED"
-	}
-	resp := map[string]interface{}{
-		"pairing_code": pairingCode,
-		"status":       status,
-		"resolution":   cameraResolution,
-	}
-	statusMutex.RUnlock()
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	json.NewEncoder(w).Encode(resp)
-}
-
-func handleConfig(w http.ResponseWriter, r *http.Request, room *lksdk.Room) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
-	if r.Method != "POST" {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var req struct {
-		Resolution string `json:"resolution"`
-		Bitrate    string `json:"bitrate"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid body", http.StatusBadRequest)
-		return
-	}
-
-	// Update Global Config
-	cameraMutex.Lock()
-	if req.Resolution != "" {
-		cameraResolution = req.Resolution
-	}
-	if req.Bitrate != "" {
-		cameraBitrate = req.Bitrate
-	}
-	cameraMutex.Unlock()
-
-	log.Printf("Config updated: %s %s", cameraResolution, cameraBitrate)
-
-	// Restart Camera
-	if room != nil {
-		startCamera(room)
-	}
-
-	w.WriteHeader(http.StatusOK)
-}
-
-// --- Main ---
-
-// Global Room Reference for HTTP Handlers
-var GlobalRoom *lksdk.Room
-
-func main() {
-	log.Println("Booting Drone Device Middleware...")
-
-	// 1. Generate Ed25519 Keypair
-	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		log.Fatalf("Failed to generate keys: %v", err)
-	}
-
-	// 2. Derive Pairing Code (INT64 now)
-	pubKeyHex := hex.EncodeToString(pubKey)
-	var codeVal uint64
-	fmt.Sscanf(pubKeyHex[:8], "%x", &codeVal)
-	// Ensure strict 8 digits (modulo 100,000,000)
-	// Actually, to guarantee 8 digits (10000000-99999999) we might want a range.
-	// But "8 digits" usually means max 8 digits.
-	// If the user wants EXACTLY 8 digits, we should ensure it's > 10000000.
-	// But let's just do modulo 100000000 for now (0-99999999).
-	// To be safe and look cool: 10000000 + (val % 90000000) -> 10000000 to 99999999
-	pairingCode = int64(10000000 + (codeVal % 90000000))
-
-	fmt.Printf("\n=== PAIRING CODE: %d ===\n\n", pairingCode)
-
-	// Start Local Dashboard Server (Task 2)
-	go func() {
-		mux := http.NewServeMux()
-		mux.HandleFunc("/api/status", handleStatus)
-		mux.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
-			handleConfig(w, r, GlobalRoom)
-		})
-		fs := http.FileServer(http.Dir("./ui/dist"))
-		mux.Handle("/", fs)
-		log.Println("Local Dashboard listening on :8081")
-		http.ListenAndServe(":8081", mux)
-	}()
-
-	// 2.5 Announce Device to Backend
-	client := &http.Client{Timeout: 5 * time.Second}
-	announceBody, _ := json.Marshal(map[string]interface{}{
-		"pairing_code": pairingCode,
-		"public_key":   pubKeyHex,
-	})
-
-	baseURL := "http://localhost:8080"
-	if url := os.Getenv("BACKEND_URL"); url != "" {
-		baseURL = url
-	}
-	AuthAPIURL = baseURL + "/api/v1/devices/auth"
-	announceURL := baseURL + "/api/v1/devices/announce"
-
-	go func() {
-		for {
-			resp, err := client.Post(announceURL, "application/json", bytes.NewBuffer(announceBody))
-			if err == nil && resp.StatusCode == http.StatusOK {
-				log.Println("Device announced.")
-				resp.Body.Close()
-				break
-			}
-			if err != nil {
-				log.Printf("Announce failed: %v", err)
-			} else {
-				log.Printf("Announce failed: Status %d", resp.StatusCode)
-			}
-			time.Sleep(3 * time.Second)
-		}
-	}()
-
-	// 3. Authentication Loop
-	var token string
-	var lkURL string
-
-	for {
-		// Poll for challenge
-		// Note: Backend expects String ID. We send integer as string.
-		resp, err := client.Post(AuthAPIURL+"/challenge", "application/json", bytes.NewBuffer([]byte(fmt.Sprintf(`{"device_id": "%d"}`, pairingCode))))
-		if err != nil {
-			time.Sleep(PollInterval)
-			continue
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
-			time.Sleep(PollInterval)
-			continue
-		}
-
-		var challengeResp ChallengeResponse
-		json.NewDecoder(resp.Body).Decode(&challengeResp)
-		resp.Body.Close()
-
-		signature := ed25519.Sign(privKey, []byte(challengeResp.Challenge))
-
-		verifyBody, _ := json.Marshal(VerifyRequest{
-			DeviceID:  fmt.Sprintf("%d", pairingCode),
-			Signature: hex.EncodeToString(signature),
-		})
-		vResp, err := client.Post(AuthAPIURL+"/verify", "application/json", bytes.NewBuffer(verifyBody))
-		if err != nil {
-			time.Sleep(PollInterval)
-			continue
-		}
-
-		if vResp.StatusCode == http.StatusOK {
-			var verifyResp VerifyResponse
-			json.NewDecoder(vResp.Body).Decode(&verifyResp)
-			token = verifyResp.Token
-			lkURL = verifyResp.URL
-			vResp.Body.Close()
-			break
-		}
-		vResp.Body.Close()
-		time.Sleep(PollInterval)
-	}
-
-	// 4. Connect to LiveKit
-	log.Printf("Connecting to LiveKit: %s", lkURL)
-	room, err := lksdk.ConnectToRoomWithToken(lkURL, token, lksdk.NewRoomCallback())
-	if err != nil {
-		log.Fatalf("Failed to connect to LiveKit: %v", err)
-	}
-
-	GlobalRoom = room
-	log.Printf("Connected to LiveKit Room: %s", room.Name())
-
-	// Start Camera with defaults
-	statusMutex.Lock()
-	isConnected = true
-	statusMutex.Unlock()
-
-	startCamera(room)
-
-	// 5. MAVLink Bridge
-	runMavlink(room)
 }
 
 func runMavlink(room *lksdk.Room) {
@@ -462,7 +570,9 @@ func runMavlink(room *lksdk.Room) {
 		OutSystemID: 10,
 	})
 	if err != nil {
-		log.Fatalf("Failed to create MAVLink node: %v", err)
+		// Just log error for demo if no mavlink source
+		log.Printf("Warning: Failed to create MAVLink node (is port 14550 busy?): %v", err)
+		return
 	}
 	defer node.Close()
 	log.Println("Listening for MAVLink packets on :14550")
@@ -520,7 +630,6 @@ func runMavlink(room *lksdk.Room) {
 			switch msg := frm.Message().(type) {
 			case *common.MessageHeartbeat:
 				currentArmed = (msg.BaseMode & common.MAV_MODE_FLAG_SAFETY_ARMED) != 0
-				// Simplified Mode Logic
 				currentMode = fmt.Sprintf("MODE(%d)", msg.CustomMode)
 			case *common.MessageAttitude:
 				currentAttitude = &Attitude{Roll: msg.Roll, Pitch: msg.Pitch, Yaw: msg.Yaw}
