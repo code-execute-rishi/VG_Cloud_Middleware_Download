@@ -3,214 +3,186 @@ import "./App.css";
 
 function App() {
   const [activeTab, setActiveTab] = useState("device");
-  const [rebooting, setRebooting] = useState(false);
+  const [status, setStatus] = useState(null);
   const [systemInfo, setSystemInfo] = useState(null);
+  const [loading, setLoading] = useState(false);
 
+  // Form State
   const [formData, setFormData] = useState({
     ssid: "",
     password: "",
     resolution: "640x480",
   });
 
+  // Poll Status
   useEffect(() => {
-    const fetchInfo = async () => {
+    const poll = async () => {
       try {
-        const res = await fetch("/api/system-info");
-        const data = await res.json();
-        setSystemInfo(data);
-      } catch (err) {
-        console.error("Failed to fetch info", err);
+        const res = await fetch("/api/status");
+        if (res.ok) {
+          const data = await res.json();
+          setStatus(data);
+          // Sync form if configured
+          if (data.camera_config?.resolution) {
+            setFormData(prev => ({ ...prev, resolution: data.camera_config.resolution }));
+          }
+        }
+      } catch (e) {
+        console.error("Poll failed", e);
       }
     };
-    fetchInfo();
+
+    // Fetch System Info once
+    fetch("/api/system-info").then(r => r.json()).then(setSystemInfo);
+
+    const interval = setInterval(poll, 2000);
+    poll();
+    return () => clearInterval(interval);
   }, []);
 
-  const handleInputChange = (e) => {
-    const { name, value } = e.target;
-    setFormData((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
-  };
-
-  const handleBindDevice = async () => {
+  const handleBind = async () => {
     try {
-      setRebooting(true);
+      setLoading(true);
       const res = await fetch("/api/save-config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(formData),
       });
-
-      if (!res.ok) throw new Error("Failed to save");
+      if (!res.ok) throw new Error("Result not OK");
     } catch (err) {
-      alert("Error saving configuration: " + err.message);
-      setRebooting(false);
+      alert("Bind Failed: " + err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
-  if (rebooting) {
+  const handleUpdateConfig = async () => {
+    try {
+      setLoading(true);
+      await fetch("/api/update-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resolution: formData.resolution }),
+      });
+      alert("Settings Updated!");
+    } catch (e) {
+      alert("Failed to update");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // --- VIEWS ---
+
+  if (!systemInfo) return <div className="container center-content"><div className="spinner"></div></div>;
+
+  const isConfigured = status?.is_configured;
+  const isConnected = status?.is_connected;
+  const isClaimed = status?.is_claimed;
+
+  if (isConfigured) {
+    // DASHBOARD VIEW
     return (
-      <div className="container center-content">
-        <div className="card reboot-card">
-          <div className="spinner"></div>
-          <h2>Rebooting...</h2>
-          <p>Your device is restarting to apply changes.</p>
-          <p className="sub-text">Please reconnect to the new network.</p>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="app-container">
-      {/* Header */}
-      <header className="top-bar">
-        <div className="logo-section">
-          <div className="logo-icon">📡</div>
-          <div className="logo-text">
-            <h1>Vyom Device Setup</h1>
-            <p className="subtitle">Bind this device to your cloud account</p>
+      <div className="app-container">
+        <header className="top-bar">
+          <div className="logo-section">
+            <div className="logo-icon green">✔️</div>
+            <div className="logo-text">
+              <h1>Device Active</h1>
+              <p className="subtitle">ID: {systemInfo.device_id}</p>
+            </div>
           </div>
-        </div>
-      </header>
+        </header>
 
-      {/* Tabs */}
-      <nav className="tabs">
-        <button
-          className={`tab-btn ${activeTab === "device" ? "active" : ""}`}
-          onClick={() => setActiveTab("device")}
-        >
-          <span className="icon">📱</span> Device
-        </button>
-        <button
-          className={`tab-btn ${activeTab === "wifi" ? "active" : ""}`}
-          onClick={() => setActiveTab("wifi")}
-        >
-          <span className="icon">📶</span> WiFi
-        </button>
-        <button
-          className={`tab-btn ${activeTab === "net" ? "active" : ""}`}
-          onClick={() => setActiveTab("net")}
-        >
-          <span className="icon">🌐</span> Net
-        </button>
-      </nav>
-
-      {/* Content */}
-      <main className="main-content">
-
-        {activeTab === "device" && (
-          <div className="card bind-card">
-            <div className="icon-large">↪️</div>
-            <h2>Bind Device to Your Account</h2>
-            <p>
-              To start using your Vyom device, you need to bind it to your account.
-              This will enable all features and remote management.
-            </p>
-
-            <div className="info-row">
-              <span className="info-label">Device ID:</span>
-              <span className="info-value">{systemInfo?.device_id || "Loading..."}</span>
+        <main className="main-content">
+          <div className="card">
+            <h2>System Status</h2>
+            <div className="status-grid">
+              <StatusItem label="Internet" value="Online" active={true} />
+              <StatusItem label="Cloud Link" value={isConnected ? "Connected" : "Connecting..."} active={isConnected} />
+              <StatusItem label="Ownership" value={isClaimed ? "Claimed" : "Unclaimed"} active={isClaimed} warned={!isClaimed} />
             </div>
-            <div className="info-row">
-              <span className="info-label">Pairing Code:</span>
-              <span className="info-value code">{systemInfo?.pairing_code || "---"}</span>
-            </div>
-
-            <div className="status-badge">
-              Requires internet connection
-            </div>
-
-            <button className="btn-primary" onClick={handleBindDevice}>
-              <span className="btn-icon">↪️</span> Bind Device Now
-            </button>
-
-            <div className="help-link">Having trouble binding?</div>
-            <div className="destructive-link">🗑️ Clear Device Credentials</div>
           </div>
-        )}
 
-        {activeTab === "wifi" && (
-          <div className="card form-card">
-            <div className="card-header">
-              <h3>WiFi Configuration</h3>
-              <button className="btn-small">⚙️ Configure</button>
+          {!isClaimed && (
+            <div className="card warn-card">
+              <h3>⚠️ Pending Claim</h3>
+              <p>This device is connected but not claimed.</p>
+              <p>Enter this code in your Cloud Dashboard:</p>
+              <div className="code-large">{systemInfo.pairing_code}</div>
             </div>
-            <p className="card-desc">Configure local network settings for internet access.</p>
+          )}
 
-            <div className="form-group">
-              <label>SSID (Network Name)</label>
-              <input
-                type="text"
-                name="ssid"
-                value={formData.ssid}
-                onChange={handleInputChange}
-                placeholder="Enter WiFi Name"
-              />
-            </div>
-
-            <div className="form-group">
-              <label>Password</label>
-              <input
-                type="password"
-                name="password"
-                value={formData.password}
-                onChange={handleInputChange}
-                placeholder="Enter WiFi Password"
-              />
-            </div>
-
+          <div className="card">
+            <h3>Device Settings</h3>
             <div className="form-group">
               <label>Camera Resolution</label>
-              <select name="resolution" value={formData.resolution} onChange={handleInputChange}>
+              <select
+                value={formData.resolution}
+                onChange={(e) => setFormData({ ...formData, resolution: e.target.value })}
+              >
                 <option value="640x480">480p</option>
                 <option value="1280x720">720p</option>
                 <option value="1920x1080">1080p</option>
               </select>
             </div>
+            <button className="btn-primary" onClick={handleUpdateConfig} disabled={loading}>
+              {loading ? "Updating..." : "Update Settings"}
+            </button>
           </div>
-        )}
+        </main>
+      </div>
+    );
+  }
 
-        {activeTab === "net" && (
-          <div className="card list-card">
-            <div className="card-header">
-              <h3>Network Interfaces</h3>
-              <span className="badge">3 devices</span>
-            </div>
+  // SETUP VIEW (Original Bind Flow)
+  return (
+    <div className="app-container">
+      <header className="top-bar">
+        <div className="logo-section">
+          <div className="logo-icon">📡</div>
+          <h1>Vyom Setup</h1>
+        </div>
+      </header>
 
-            <div className="list-item">
-              <div className="item-icon">💻</div>
-              <div className="item-details">
-                <span className="item-title">lo</span>
-                <span className="item-sub">127.0.0.1</span>
-              </div>
-              <span className="tag connected">Connected</span>
-            </div>
+      <main className="main-content">
+        <div className="card bind-card">
+          <h2>Bind Device</h2>
+          <p>Pairing Code: <span className="code">{systemInfo.pairing_code}</span></p>
 
-            <div className="list-item">
-              <div className="item-icon">🔌</div>
-              <div className="item-details">
-                <span className="item-title">eth0</span>
-                <span className="item-sub">192.168.1.5</span>
-              </div>
-              <span className="tag connected">Connected</span>
-            </div>
-
-            <div className="list-item">
-              <div className="item-icon">📡</div>
-              <div className="item-details">
-                <span className="item-title">wlan0</span>
-                <span className="item-sub">Scanning...</span>
-              </div>
-              <span className="tag">Disconnected</span>
-            </div>
+          <div className="form-group" style={{ width: '100%', textAlign: 'left' }}>
+            <label>WiFi SSID</label>
+            <input
+              type="text" value={formData.ssid}
+              onChange={(e) => setFormData({ ...formData, ssid: e.target.value })}
+              placeholder="SSID"
+            />
           </div>
-        )}
+          <div className="form-group" style={{ width: '100%', textAlign: 'left' }}>
+            <label>Password</label>
+            <input
+              type="password" value={formData.password}
+              onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+              placeholder="Password"
+            />
+          </div>
 
+          <button className="btn-primary" onClick={handleBind} disabled={loading}>
+            {loading ? "Binding..." : "Bind Device"}
+          </button>
+        </div>
       </main>
     </div>
   );
 }
+
+const StatusItem = ({ label, value, active, warned }) => (
+  <div className="status-item">
+    <div className="status-label">{label}</div>
+    <div className={`status-value ${active ? 'active' : ''} ${warned ? 'warn' : ''}`}>
+      {value}
+    </div>
+  </div>
+);
 
 export default App;

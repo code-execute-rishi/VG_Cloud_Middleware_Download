@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"time"
@@ -54,9 +55,14 @@ type VerifyRequest struct {
 }
 
 type VerifyResponse struct {
-	LiveKitToken string `json:"livekit_token"`
-	LiveKitURL   string `json:"livekit_url"`
-	RoomName     string `json:"room_name"`
+	LiveKitToken string         `json:"livekit_token"`
+	LiveKitURL   string         `json:"livekit_url"`
+	RoomName     string         `json:"room_name"`
+	Zerotier     ZerotierConfig `json:"zerotier"`
+}
+
+type ZerotierConfig struct {
+	NetworkID string `json:"network_id"`
 }
 
 type TelemetryUpdate struct {
@@ -67,6 +73,15 @@ type TelemetryUpdate struct {
 	Heading        float32 `json:"heading"`
 	SignalStrength int     `json:"signal_strength"`
 	Battery        int     `json:"battery"`
+}
+
+type CheckClaimRequest struct {
+	DeviceID string `json:"device_id"`
+}
+
+type CheckClaimResponse struct {
+	Claim   bool   `json:"claim"`
+	Message string `json:"message"`
 }
 
 // --- Backend Client ---
@@ -139,12 +154,10 @@ func (c *BackendClient) TypifySaveIdentity() error {
 // --- API Methods ---
 
 func (c *BackendClient) Register() error {
-	// Need to register even if we have DeviceID?
-	// API spec says "Register (Run once)".
-	// If we have DeviceID, we theoretically are done.
-	// But in 'SETUP MODE', the user might be retrying.
-	// Let's assume idempotency or re-register attempts are okay.
-	// IMPORTANT: Payload matching user request.
+	// If we already have a DeviceID, we assume registered.
+	if c.Identity.DeviceID != "" {
+		return nil
+	}
 
 	req := RegisterRequest{
 		PublicKey:   c.Identity.PublicKey,
@@ -192,6 +205,19 @@ func (c *BackendClient) Authenticate() (*VerifyResponse, error) {
 	return &verifyRes, nil
 }
 
+func (c *BackendClient) CheckClaim() (bool, error) {
+	if c.Identity.DeviceID == "" {
+		return false, fmt.Errorf("device not registered")
+	}
+
+	req := CheckClaimRequest{DeviceID: c.Identity.DeviceID}
+	var res CheckClaimResponse
+	if err := c.post("/api/v1/devices/auth/check-claim", req, &res); err != nil {
+		return false, err
+	}
+	return res.Claim, nil
+}
+
 func (c *BackendClient) UpdateTelemetry(data TelemetryUpdate) error {
 	if c.Identity.DeviceID == "" {
 		return nil
@@ -207,6 +233,9 @@ func (c *BackendClient) post(path string, payload interface{}, target interface{
 	if err != nil {
 		return err
 	}
+
+	// DEBUG: Print outgoing JSON to verify values
+	log.Printf(">>> SENDING TO %s: %s", path, string(body))
 
 	url := c.BaseURL + path
 	resp, err := c.HTTPClient.Post(url, "application/json", bytes.NewBuffer(body))
