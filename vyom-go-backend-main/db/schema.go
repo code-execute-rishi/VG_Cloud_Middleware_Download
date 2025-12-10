@@ -47,6 +47,7 @@ func InitSchema() error {
     CREATE TABLE IF NOT EXISTS zerotier_config (
         device_id UUID PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
         zerotier_ip VARCHAR(50),
+
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
     );

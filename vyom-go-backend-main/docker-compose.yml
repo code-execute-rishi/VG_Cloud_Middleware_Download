@@ -16,6 +16,7 @@ services:
   backend:
     build: .
     restart: always
+    # expose 8080 internally, but map it externally too just in case
     ports:
       - "8080:8080"
     depends_on:
@@ -29,9 +30,17 @@ services:
       - DB_USER=vyom
       - DB_PASSWORD=secure_drone_pass
       - DB_NAME=vyom
-      # These will be overridden by .env.backend if present, 
-      # but we rely on .env.backend primarily for CLERK and LIVEKIT keys.
-      # DB connection details are hardcoded above to ensure internal connectivity.
+
+  nginx:
+    image: nginx:latest
+    container_name: vyom-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend
+    restart: always
 
 volumes:
   pgdata:

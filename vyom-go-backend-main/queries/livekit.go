@@ -23,7 +23,7 @@ func GetOrCreateLiveKitRoom(db *sql.DB, deviceID string) (string, error) {
     err := db.QueryRow("SELECT room_name FROM livekit_rooms WHERE device_id = $1", deviceID).Scan(&roomName)
     
     if err == sql.ErrNoRows {
-        roomName = "device-" + deviceID
+        roomName = deviceID
         _, err = db.Exec(
             "INSERT INTO livekit_rooms (device_id, room_name) VALUES ($1, $2)",
             deviceID, roomName,
