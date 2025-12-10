@@ -1,51 +1,37 @@
+version: '3.8'
+
 services:
-  postgres:
+  db:
     image: postgres:15
-    container_name: vyom-postgres
-    env_file:
-      - .env
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
     restart: always
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $DB_USER"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-      start_period: 5s
+    environment:
+      POSTGRES_USER: vyom
+      POSTGRES_PASSWORD: secure_drone_pass
+      POSTGRES_DB: vyom
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
 
   backend:
-    image: ghcr.io/raunak0713/vyom-go-backend
-    container_name: vyom-go-backend
-    env_file:
-      - .env
-    depends_on:
-      postgres:
-        condition: service_healthy
-    expose:
-      - "8080"
+    build: .
     restart: always
-
-  nginx:
-    image: nginx:latest
-    container_name: vyom-nginx
     ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - "8080:8080"
     depends_on:
-      - backend
-    restart: always
-
-  watchtower:
-    image: nickfedor/watchtower:latest
-    container_name: vyom-watchtower
-    restart: always
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ~/.docker/config.json:/config.json:ro
-    command: --interval 60 --cleanup vyom-go-backend
+      - db
+    env_file:
+      - .env.backend
+    environment:
+      - ENV=production
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_USER=vyom
+      - DB_PASSWORD=secure_drone_pass
+      - DB_NAME=vyom
+      # These will be overridden by .env.backend if present, 
+      # but we rely on .env.backend primarily for CLERK and LIVEKIT keys.
+      # DB connection details are hardcoded above to ensure internal connectivity.
 
 volumes:
-  postgres_data:
+  pgdata:
