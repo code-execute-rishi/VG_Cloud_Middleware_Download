@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import "./App.css";
 
 function App() {
-  const [activeTab, setActiveTab] = useState("device");
+  const [view, setView] = useState("dashboard"); // 'dashboard', 'camera'
   const [status, setStatus] = useState(null);
   const [systemInfo, setSystemInfo] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -75,49 +75,109 @@ function App() {
     }
   };
 
-  // --- VIEWS ---
-
   if (!systemInfo) return <div className="container center-content"><div className="spinner"></div></div>;
 
   const isConfigured = status?.is_configured;
   const isConnected = status?.is_connected;
   const isClaimed = status?.is_claimed;
 
-  if (isConfigured) {
-    // DASHBOARD VIEW
+  // NOTE: If device is not CLAIMED, we force the Bind Screen (Setup), 
+  // even if it is technically configured (WiFi is set). 
+  // This allows the user to see the Pairing Code easily if they Unbound/Forgot it.
+  const showSetup = !isClaimed;
+
+  if (showSetup) {
+    // SETUP VIEW (Bind Flow)
     return (
       <div className="app-container">
         <header className="top-bar">
           <div className="logo-section">
-            <div className="logo-icon green">✔️</div>
-            <div className="logo-text">
-              <h1>Device Active</h1>
-              <p className="subtitle">ID: {systemInfo.device_id}</p>
-            </div>
+            <div className="logo-icon">📡</div>
+            <h1>Vyom Setup</h1>
           </div>
         </header>
 
         <main className="main-content">
+          <div className="card bind-card">
+            <h2>Bind Device</h2>
+            <p>Pairing Code: <span className="code">{systemInfo.pairing_code}</span></p>
+
+            <div className="form-group" style={{ width: '100%', textAlign: 'left' }}>
+              <label>WiFi SSID</label>
+              <input
+                type="text" value={formData.ssid}
+                onChange={(e) => setFormData({ ...formData, ssid: e.target.value })}
+                placeholder="SSID"
+              />
+            </div>
+            <div className="form-group" style={{ width: '100%', textAlign: 'left' }}>
+              <label>Password</label>
+              <input
+                type="password" value={formData.password}
+                onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                placeholder="Password"
+              />
+            </div>
+
+            <button className="btn-primary" onClick={handleBind} disabled={loading}>
+              {loading ? "Binding..." : "Bind Device"}
+            </button>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  // DASHBOARD VIEW (Claimed)
+  return (
+    <div className="app-container">
+      <header className="top-bar">
+        <div className="logo-section">
+          <div className="logo-icon green">✔️</div>
+          <div className="logo-text">
+            <h1>Device Active</h1>
+            <p className="subtitle">ID: {systemInfo.device_id}</p>
+          </div>
+        </div>
+        <div className="nav-tabs">
+          <button
+            className={`nav-tab ${view === 'dashboard' ? 'active' : ''}`}
+            onClick={() => setView('dashboard')}
+          >
+            Dashboard
+          </button>
+          <button
+            className={`nav-tab ${view === 'camera' ? 'active' : ''}`}
+            onClick={() => setView('camera')}
+          >
+            Camera & Settings
+          </button>
+        </div>
+      </header>
+
+      <main className="main-content">
+        {view === 'dashboard' && (
           <div className="card">
             <h2>System Status</h2>
             <div className="status-grid">
               <StatusItem label="Internet" value="Online" active={true} />
               <StatusItem label="Cloud Link" value={isConnected ? "Connected" : "Connecting..."} active={isConnected} />
-              <StatusItem label="Ownership" value={isClaimed ? "Claimed" : "Unclaimed"} active={isClaimed} warned={!isClaimed} />
+              <StatusItem label="Ownership" value="Claimed" active={true} />
             </div>
           </div>
+        )}
 
-          {!isClaimed && (
-            <div className="card warn-card">
-              <h3>⚠️ Pending Claim</h3>
-              <p>This device is connected but not claimed.</p>
-              <p>Enter this code in your Cloud Dashboard:</p>
-              <div className="code-large">{systemInfo.pairing_code}</div>
-            </div>
-          )}
-
+        {view === 'camera' && (
           <div className="card">
-            <h3>Device Settings</h3>
+            <h3>Local Camera Stream</h3>
+            <div className="stream-container" style={{ marginBottom: '20px', background: '#000', borderRadius: '8px', overflow: 'hidden', minHeight: '300px' }}>
+              <img
+                src={`http://${window.location.hostname}:8081`}
+                alt="Local Stream"
+                style={{ width: '100%', display: 'block' }}
+              />
+            </div>
+
             <div className="form-group">
               <label>Camera Resolution</label>
               <select
@@ -133,47 +193,7 @@ function App() {
               {loading ? "Updating..." : "Update Settings"}
             </button>
           </div>
-        </main>
-      </div>
-    );
-  }
-
-  // SETUP VIEW (Original Bind Flow)
-  return (
-    <div className="app-container">
-      <header className="top-bar">
-        <div className="logo-section">
-          <div className="logo-icon">📡</div>
-          <h1>Vyom Setup</h1>
-        </div>
-      </header>
-
-      <main className="main-content">
-        <div className="card bind-card">
-          <h2>Bind Device</h2>
-          <p>Pairing Code: <span className="code">{systemInfo.pairing_code}</span></p>
-
-          <div className="form-group" style={{ width: '100%', textAlign: 'left' }}>
-            <label>WiFi SSID</label>
-            <input
-              type="text" value={formData.ssid}
-              onChange={(e) => setFormData({ ...formData, ssid: e.target.value })}
-              placeholder="SSID"
-            />
-          </div>
-          <div className="form-group" style={{ width: '100%', textAlign: 'left' }}>
-            <label>Password</label>
-            <input
-              type="password" value={formData.password}
-              onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-              placeholder="Password"
-            />
-          </div>
-
-          <button className="btn-primary" onClick={handleBind} disabled={loading}>
-            {loading ? "Binding..." : "Bind Device"}
-          </button>
-        </div>
+        )}
       </main>
     </div>
   );
