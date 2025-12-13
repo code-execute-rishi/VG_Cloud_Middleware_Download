@@ -199,6 +199,16 @@ func runStateLoop() {
 		log.Println("[Loop] Authenticating...")
 		authRes, err := apiClient.Authenticate()
 		if err != nil {
+			if err.Error() == "DEVICE_FORGOTTEN" {
+				log.Println("⚠️ DEVICE FORGOTTEN BY CLOUD. RESETTING IDENTITY... ⚠️")
+				if resetErr := apiClient.ResetIdentity(); resetErr != nil {
+					log.Printf("[Loop] Reset Identity Failed: %v", resetErr)
+				}
+				// Clear Status to force Setup UI
+				setStatus(false, false, false)
+				time.Sleep(2 * time.Second)
+				continue
+			}
 			log.Printf("[Loop] Auth Failed: %v", err)
 			time.Sleep(5 * time.Second)
 			continue
@@ -612,11 +622,38 @@ func startCamera(room *lksdk.Room) {
 		os.Remove(pipePath)
 		syscall.Mkfifo(pipePath, 0666)
 
-		cmd := exec.CommandContext(ctx, "ffmpeg",
-			"-f", "v4l2", "-input_format", "mjpeg", "-video_size", cameraResolution, "-i", "/dev/video0",
-			"-c:v", "libvpx", "-b:v", cameraBitrate, "-deadline", "realtime", "-cpu-used", "5",
-			"-f", "ivf", "-y", pipePath,
+		// Parse Resolution
+		var width, height uint32
+		if n, _ := fmt.Sscanf(cameraResolution, "%dx%d", &width, &height); n != 2 {
+			width, height = 640, 480
+		}
+
+		// GStreamer Pipeline:
+		// 1. v4l2src -> raw video
+		// 2. Tee -> Branch A (LiveKit/VP8), Branch B (Local/MJPEG)
+		// Branch A: vp8enc -> ivfenc -> pipe
+		// Branch B: jpegenc -> multipartmux -> tcpserversink (Port 8081)
+
+		gstCmd := fmt.Sprintf(
+			"v4l2src device=/dev/video0 ! video/x-raw,width=%d,height=%d,framerate=30/1 ! "+
+				"tee name=t ! "+
+				"queue ! vp8enc error-resilient=1 ! ivfenc ! pipe://%s "+
+				"t. ! queue ! jpegenc ! multipartmux boundary=--boundary ! tcpserversink host=0.0.0.0 port=8081",
+			width, height, pipePath,
 		)
+
+		log.Println("Starting GStreamer Pipeline:", gstCmd)
+		cmd := exec.CommandContext(ctx, "gst-launch-1.0", "-v", "--no-position",
+			"v4l2src", fmt.Sprintf("device=/dev/video0"), "!",
+			fmt.Sprintf("video/x-raw,width=%d,height=%d,framerate=30/1", width, height), "!",
+			"tee", "name=t", "!",
+			"queue", "!", "vp8enc", "error-resilient=1", "!", "ivfenc", "!", fmt.Sprintf("pipe://%s", pipePath),
+			"t.", "!", "queue", "!", "jpegenc", "!", "multipartmux", "boundary=--boundary", "!", "tcpserversink", "host=0.0.0.0", "port=8081",
+		)
+		// Note: The constructed string was just for logging/reference. Exec requires args split.
+		// Actually, gst-launch-1.0 parsing can be tricky with split args.
+		// Let's use 'sh -c' to avoid splitting headaches for complex pipelines.
+		cmd = exec.CommandContext(ctx, "sh", "-c", "gst-launch-1.0 -v "+gstCmd)
 
 		// Capture Stderr for debugging
 		var stderr bytes.Buffer
@@ -688,11 +725,6 @@ func startCamera(room *lksdk.Room) {
 		}
 		defer file.Close()
 
-		var width, height uint32
-		if n, _ := fmt.Sscanf(cameraResolution, "%dx%d", &width, &height); n != 2 {
-			log.Printf("Invalid Resolution format '%s', defaulting to 640x480", cameraResolution)
-			width, height = 640, 480
-		}
 		track, _ := lksdk.NewLocalSampleTrack(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8, ClockRate: 90000})
 
 		// Retry Loop for PublishTrack

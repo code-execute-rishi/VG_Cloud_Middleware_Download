@@ -151,6 +151,16 @@ func (c *BackendClient) TypifySaveIdentity() error {
 	return os.WriteFile(IdentityFile, data, 0644)
 }
 
+func (c *BackendClient) ResetIdentity() error {
+	log.Println("⚠️ RESETTING IDENTITY (Device Forgotten/Factory Reset) ⚠️")
+
+	// delete old file
+	os.Remove(IdentityFile)
+
+	// Create new
+	return c.LoadOrCreateIdentity()
+}
+
 // --- API Methods ---
 
 func (c *BackendClient) Register() error {
@@ -183,6 +193,10 @@ func (c *BackendClient) Authenticate() (*VerifyResponse, error) {
 	chalReq := ChallengeRequest{DeviceID: c.Identity.DeviceID}
 	var chalRes ChallengeResponse
 	if err := c.post("/api/v1/devices/auth/challenge", chalReq, &chalRes); err != nil {
+		// If 400 or 404, the device might be deleted. reset?
+		// We need to check if err contains 400 or 404 (our post helper returns "API Error 400: ...")
+		// Ideally we catch strict 4xx.
+		// For safety, let's reset on 400 Bad Request (Device ID not found)
 		return nil, fmt.Errorf("challenge failed: %v", err)
 	}
 
@@ -246,6 +260,16 @@ func (c *BackendClient) post(path string, payload interface{}, target interface{
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
+		// Specific Check for Identity Reset triggers
+		// Backend returns 400 if DeviceID not found in GetChallenge
+		if path == "/api/v1/devices/auth/challenge" && resp.StatusCode == 400 {
+			// This is a candidate for Reset, but we should be sure.
+			// The backend says "No devices found with this device ID"
+			if bytes.Contains(respBody, []byte("No devices found")) || bytes.Contains(respBody, []byte("Device with this deviceID doesn't exist")) {
+				return fmt.Errorf("DEVICE_FORGOTTEN")
+			}
+		}
+
 		return fmt.Errorf("API Error %d: %s", resp.StatusCode, string(respBody))
 	}
 

@@ -63,6 +63,23 @@ func DeleteChallenge(db *sql.DB, deviceID string) error {
 	return err
 }
 
+func DeleteDeviceHard(db *sql.DB, deviceID, userID string) error {
+	result, err := db.Exec(
+		"DELETE FROM devices WHERE id = $1 AND owner_id = $2",
+		deviceID, userID,
+	)
+	if err != nil {
+		return err
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return errors.New("device not found or not owned by user")
+	}
+
+	return nil
+}
+
 func GetUserIDFromDeviceID(db *sql.DB, deviceID string) (string, error) {
 	var userID sql.NullString
 
@@ -102,11 +119,11 @@ func CheckClaim(db *sql.DB, deviceID string) (bool, error) {
 }
 
 func UpdateDeviceStatus(db *sql.DB, deviceID, status string) error {
-    query := `
+	query := `
         UPDATE devices 
         SET status = $1, last_seen = NOW()
         WHERE id = $2
     `
-    _, err := db.Exec(query, status, deviceID)
-    return err
+	_, err := db.Exec(query, status, deviceID)
+	return err
 }

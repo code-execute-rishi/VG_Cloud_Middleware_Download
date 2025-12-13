@@ -16,93 +16,93 @@ import (
 )
 
 func GetClerkIDandEmail(w http.ResponseWriter, r *http.Request) {
-    claims := r.Context().Value(middleware.ClerkUserIDKey).(*clerk.SessionClaims)
+	claims := r.Context().Value(middleware.ClerkUserIDKey).(*clerk.SessionClaims)
 
-    usr, err := user.Get(r.Context(), claims.Subject)
-    if err != nil {
-        utils.RespondWithError(w, http.StatusInternalServerError, "Failed to fetch user: "+err.Error())
-        return
-    }
+	usr, err := user.Get(r.Context(), claims.Subject)
+	if err != nil {
+		utils.RespondWithError(w, http.StatusInternalServerError, "Failed to fetch user: "+err.Error())
+		return
+	}
 
-    var email string
-    if usr.PrimaryEmailAddressID != nil && len(usr.EmailAddresses) > 0 {
-        for _, emailAddr := range usr.EmailAddresses {
-            if emailAddr.ID == *usr.PrimaryEmailAddressID {
-                email = emailAddr.EmailAddress
-                break
-            }
-        }
-    }
+	var email string
+	if usr.PrimaryEmailAddressID != nil && len(usr.EmailAddresses) > 0 {
+		for _, emailAddr := range usr.EmailAddresses {
+			if emailAddr.ID == *usr.PrimaryEmailAddressID {
+				email = emailAddr.EmailAddress
+				break
+			}
+		}
+	}
 
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(map[string]string{
-        "clerk_user_id": claims.Subject,
-        "email": email,
-    })
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"clerk_user_id": claims.Subject,
+		"email":         email,
+	})
 }
 
 func ClaimDevice(w http.ResponseWriter, r *http.Request) {
-    if r.Method != http.MethodPost {
-        utils.RespondWithError(w, http.StatusMethodNotAllowed, "Method not allowed")
-        return
-    }
+	if r.Method != http.MethodPost {
+		utils.RespondWithError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
 
-    claims := r.Context().Value(middleware.ClerkUserIDKey).(*clerk.SessionClaims)
-    clerkUserID := claims.Subject
+	claims := r.Context().Value(middleware.ClerkUserIDKey).(*clerk.SessionClaims)
+	clerkUserID := claims.Subject
 
-    usr, err := user.Get(r.Context(), claims.Subject)
-    if err != nil {
-        utils.RespondWithError(w, http.StatusInternalServerError, "Failed to fetch user: "+err.Error())
-        return
-    }
+	usr, err := user.Get(r.Context(), claims.Subject)
+	if err != nil {
+		utils.RespondWithError(w, http.StatusInternalServerError, "Failed to fetch user: "+err.Error())
+		return
+	}
 
-    var email string
-    if usr.PrimaryEmailAddressID != nil && len(usr.EmailAddresses) > 0 {
-        for _, emailAddr := range usr.EmailAddresses {
-            if emailAddr.ID == *usr.PrimaryEmailAddressID {
-                email = emailAddr.EmailAddress
-                break
-            }
-        }
-    }
+	var email string
+	if usr.PrimaryEmailAddressID != nil && len(usr.EmailAddresses) > 0 {
+		for _, emailAddr := range usr.EmailAddresses {
+			if emailAddr.ID == *usr.PrimaryEmailAddressID {
+				email = emailAddr.EmailAddress
+				break
+			}
+		}
+	}
 
-    var req models.ClaimRequest
-    err = json.NewDecoder(r.Body).Decode(&req)
-    if err != nil {
-        utils.RespondWithError(w, http.StatusBadRequest, "Invalid JSON")
-        return
-    }
+	var req models.ClaimRequest
+	err = json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		utils.RespondWithError(w, http.StatusBadRequest, "Invalid JSON")
+		return
+	}
 
-    if req.PairingCode == 0 {
-        utils.RespondWithError(w, http.StatusBadRequest, "Pairing code[Int] is required")
-        return
-    }
+	if req.PairingCode == 0 {
+		utils.RespondWithError(w, http.StatusBadRequest, "Pairing code[Int] is required")
+		return
+	}
 
-    if req.Name == "" {
-        utils.RespondWithError(w, http.StatusBadRequest, "Name[String] is required")
-        return
-    }
+	if req.Name == "" {
+		utils.RespondWithError(w, http.StatusBadRequest, "Name[String] is required")
+		return
+	}
 
-    userID, err := queries.GetOrCreateUser(db.DB, clerkUserID, email)
-    if err != nil {
-        utils.RespondWithError(w, http.StatusInternalServerError, "Failed to get/create user: "+err.Error())
-        return
-    }
+	userID, err := queries.GetOrCreateUser(db.DB, clerkUserID, email)
+	if err != nil {
+		utils.RespondWithError(w, http.StatusInternalServerError, "Failed to get/create user: "+err.Error())
+		return
+	}
 
-    deviceID, err := queries.ClaimDevice(db.DB, req.PairingCode, userID, req.Name)
-    if err != nil {
-        utils.RespondWithError(w, http.StatusBadRequest, "Failed to claim device: " + err.Error())
-        return
-    }
+	deviceID, err := queries.ClaimDevice(db.DB, req.PairingCode, userID, req.Name)
+	if err != nil {
+		utils.RespondWithError(w, http.StatusBadRequest, "Failed to claim device: "+err.Error())
+		return
+	}
 
-    resp := models.ClaimResponse{
-        Message:  "Device Claimed Successfully!!",
-        DeviceID: deviceID,
-        Name:     req.Name,
-    }
+	resp := models.ClaimResponse{
+		Message:  "Device Claimed Successfully!!",
+		DeviceID: deviceID,
+		Name:     req.Name,
+	}
 
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(resp)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
 func GetDevices(w http.ResponseWriter, r *http.Request) {
@@ -181,63 +181,62 @@ func GetDevices(w http.ResponseWriter, r *http.Request) {
 }
 
 func GetDevice(w http.ResponseWriter, r *http.Request) {
-    if r.Method != http.MethodGet {
-        utils.RespondWithError(w, http.StatusMethodNotAllowed, "Method not allowed")
-        return
-    }
+	if r.Method != http.MethodGet {
+		utils.RespondWithError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
 
-    vars := mux.Vars(r)
-    deviceID := vars["deviceId"]
-    if deviceID == "" {
-        utils.RespondWithError(w, http.StatusBadRequest, "Device ID required")
-        return
-    }
+	vars := mux.Vars(r)
+	deviceID := vars["deviceId"]
+	if deviceID == "" {
+		utils.RespondWithError(w, http.StatusBadRequest, "Device ID required")
+		return
+	}
 
-    claims := r.Context().Value(middleware.ClerkUserIDKey).(*clerk.SessionClaims)
-    clerkUserID := claims.Subject
+	claims := r.Context().Value(middleware.ClerkUserIDKey).(*clerk.SessionClaims)
+	clerkUserID := claims.Subject
 
-    usr, err := user.Get(r.Context(), claims.Subject)
-    if err != nil {
-        utils.RespondWithError(w, http.StatusInternalServerError, "Failed to fetch user: "+err.Error())
-        return
-    }
+	usr, err := user.Get(r.Context(), claims.Subject)
+	if err != nil {
+		utils.RespondWithError(w, http.StatusInternalServerError, "Failed to fetch user: "+err.Error())
+		return
+	}
 
-    var email string
-    if usr.PrimaryEmailAddressID != nil && len(usr.EmailAddresses) > 0 {
-        for _, emailAddr := range usr.EmailAddresses {
-            if emailAddr.ID == *usr.PrimaryEmailAddressID {
-                email = emailAddr.EmailAddress
-                break
-            }
-        }
-    }
+	var email string
+	if usr.PrimaryEmailAddressID != nil && len(usr.EmailAddresses) > 0 {
+		for _, emailAddr := range usr.EmailAddresses {
+			if emailAddr.ID == *usr.PrimaryEmailAddressID {
+				email = emailAddr.EmailAddress
+				break
+			}
+		}
+	}
 
-    userID, err := queries.GetOrCreateUser(db.DB, clerkUserID, email)
-    if err != nil {
-        utils.RespondWithError(w, http.StatusInternalServerError, "Failed to get user: "+err.Error())
-        return
-    }
+	userID, err := queries.GetOrCreateUser(db.DB, clerkUserID, email)
+	if err != nil {
+		utils.RespondWithError(w, http.StatusInternalServerError, "Failed to get user: "+err.Error())
+		return
+	}
 
-    exists, err := queries.DeviceExistsByID(db.DB, deviceID)
-    if err != nil {
-        utils.RespondWithError(w, http.StatusInternalServerError, "Failed to get the device: "+err.Error())
-        return
-    }
-    if !exists {
-        utils.RespondWithError(w, http.StatusBadRequest, "Device with this deviceID doesn't exist")
-        return
-    }
+	exists, err := queries.DeviceExistsByID(db.DB, deviceID)
+	if err != nil {
+		utils.RespondWithError(w, http.StatusInternalServerError, "Failed to get the device: "+err.Error())
+		return
+	}
+	if !exists {
+		utils.RespondWithError(w, http.StatusBadRequest, "Device with this deviceID doesn't exist")
+		return
+	}
 
-    device, err := queries.GetDeviceByID(db.DB, deviceID, userID)
-    if err != nil {
-        utils.RespondWithError(w, http.StatusNotFound, "Device not found: "+err.Error())
-        return
-    }
+	device, err := queries.GetDeviceByID(db.DB, deviceID, userID)
+	if err != nil {
+		utils.RespondWithError(w, http.StatusNotFound, "Device not found: "+err.Error())
+		return
+	}
 
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(device)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(device)
 }
-
 
 func DeleteDevice(w http.ResponseWriter, r *http.Request) {
 	log.Println("========================================")
@@ -309,14 +308,24 @@ func DeleteDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Println("✅ DeleteDevice: Device exists")
 
-	log.Println("🔵 DeleteDevice: Deleting device from database...")
-	err = queries.DeleteDevice(db.DB, deviceID, userID)
+	// Check query param for type=forget
+	deleteType := r.URL.Query().Get("type")
+	log.Println("🔵 DeleteDevice: Delete Type:", deleteType)
+
+	if deleteType == "forget" {
+		log.Println("🔵 DeleteDevice: Hard Deleting device from database...")
+		err = queries.DeleteDeviceHard(db.DB, deviceID, userID)
+	} else {
+		log.Println("🔵 DeleteDevice: Soft Deleting (Unbinding) device from database...")
+		err = queries.DeleteDevice(db.DB, deviceID, userID)
+	}
+
 	if err != nil {
 		log.Println("❌ DeleteDevice: Failed to delete device:", err)
 		utils.RespondWithError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	log.Println("✅ DeleteDevice: Device deleted successfully")
+	log.Println("✅ DeleteDevice: Device action completed successfully")
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})

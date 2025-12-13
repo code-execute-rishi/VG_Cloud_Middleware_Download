@@ -164,14 +164,14 @@ const AccessControlTab = () => {
     }
   };
 
-  const openDeleteDeviceModal = (device) => {
-    setDeviceToDelete(device);
+  const openDeleteDeviceModal = (device, type = "unbind") => {
+    setDeviceToDelete({ ...device, deleteType: type });
     setDeleteConfirmName("");
     setIsDeleteDeviceOpen(true);
   };
 
   const handleDeleteDevice = async () => {
-    if (deleteConfirmName !== deviceToDelete.name) {
+    if (deviceToDelete.deleteType === "forget" && deleteConfirmName !== deviceToDelete.name) {
       toast.error("Device name doesn't match");
       return;
     }
@@ -179,12 +179,16 @@ const AccessControlTab = () => {
     setIsDeleting(true);
 
     try {
-      const response = await fetch(`/api/devices/${deviceToDelete.id}`, {
+      const url = deviceToDelete.deleteType === "forget"
+        ? `/api/devices/${deviceToDelete.id}?type=forget`
+        : `/api/devices/${deviceToDelete.id}`;
+
+      const response = await fetch(url, {
         method: "DELETE"
       });
 
       if (response.ok) {
-        toast.success("Device deleted successfully");
+        toast.success(deviceToDelete.deleteType === "forget" ? "Device forgotten successfully" : "Device unbound successfully");
         setIsDeleteDeviceOpen(false);
         setDeviceToDelete(null);
         setDeleteConfirmName("");
@@ -288,15 +292,27 @@ const AccessControlTab = () => {
                     </p>
                   </div>
                   <div className="flex items-center gap-3">
-                    <div
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        openDeleteDeviceModal(device);
-                      }}
-                      className="p-2 rounded-lg text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
-                      title="Delete Device"
-                    >
-                      <Trash2 className="h-4 w-4" />
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openDeleteDeviceModal(device, "unbind");
+                        }}
+                        className="p-2 rounded-lg text-amber-600 hover:bg-amber-50 transition-colors cursor-pointer"
+                        title="Unbind Device (Soft Delete)"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-unlink"><path d="m18.84 12.25 1.72-1.71h-.02a5.004 5.004 0 0 0-.12-7.07 5.006 5.006 0 0 0-6.95 0l-1.6 1.6" /><path d="m8.5 14 5 5 1.5-1.5" /><path d="M2 15h10" /><path d="m16.75 6.23-4.28 4.3a2.3 2.3 0 0 0 0 3.27l1.66 1.66a2.3 2.3 0 0 0 3.27 0l4.28-4.28" /><path d="m7 17-5-5" /></svg>
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openDeleteDeviceModal(device, "forget");
+                        }}
+                        className="p-2 rounded-lg text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
+                        title="Forget Device (Hard Delete)"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
                     </div>
                     <span className="text-sm text-gray-500">
                       {device.collaborators?.length || 0} {device.collaborators?.length === 1 ? 'collaborators' : 'collaborators'}
@@ -513,27 +529,35 @@ const AccessControlTab = () => {
               </div>
               <div>
                 <h3 className="text-lg font-semibold text-gray-900">
-                  Delete Device
+                  {deviceToDelete.deleteType === "forget" ? "Forget Device" : "Unbind Device"}
                 </h3>
                 <p className="text-sm text-gray-500 mt-1">
-                  This action cannot be undone. This will permanently delete the device and all associated data.
+                  {deviceToDelete.deleteType === "forget"
+                    ? "This action cannot be undone. This will permanently delete the device and force a reset."
+                    : "This will remove the device from your account but keep it registered in the system."}
                 </p>
               </div>
             </div>
 
-            <div className="mb-4 p-3 bg-gray-50 rounded-lg">
-              <p className="text-sm text-gray-700 mb-2">
-                Type <span className="font-mono font-semibold">{deviceToDelete.name}</span> to confirm:
+            {deviceToDelete.deleteType === "forget" ? (
+              <div className="mb-4 p-3 bg-gray-50 rounded-lg">
+                <p className="text-sm text-gray-700 mb-2">
+                  Type <span className="font-mono font-semibold">{deviceToDelete.name}</span> to confirm:
+                </p>
+                <input
+                  type="text"
+                  value={deleteConfirmName}
+                  onChange={(e) => setDeleteConfirmName(e.target.value)}
+                  placeholder="Enter device name"
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-red-500 focus:outline-none focus:ring-1 focus:ring-red-500"
+                  disabled={isDeleting}
+                />
+              </div>
+            ) : (
+              <p className="text-sm text-gray-600 mb-4">
+                This will release the device. It can be paired again later using its pairing code.
               </p>
-              <input
-                type="text"
-                value={deleteConfirmName}
-                onChange={(e) => setDeleteConfirmName(e.target.value)}
-                placeholder="Enter device name"
-                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-red-500 focus:outline-none focus:ring-1 focus:ring-red-500"
-                disabled={isDeleting}
-              />
-            </div>
+            )}
 
             <div className="flex items-center justify-end gap-2">
               <button
@@ -551,11 +575,14 @@ const AccessControlTab = () => {
               <button
                 type="button"
                 onClick={handleDeleteDevice}
-                disabled={deleteConfirmName !== deviceToDelete.name || isDeleting}
-                className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={(deviceToDelete.deleteType === "forget" && deleteConfirmName !== deviceToDelete.name) || isDeleting}
+                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-50 disabled:cursor-not-allowed ${deviceToDelete.deleteType === "forget"
+                    ? "bg-red-600 hover:bg-red-700"
+                    : "bg-amber-600 hover:bg-amber-700"
+                  }`}
               >
-                <Trash2 className="h-4 w-4" />
-                {isDeleting ? "Deleting..." : "Delete Device"}
+                {deviceToDelete.deleteType === "forget" ? <Trash2 className="h-4 w-4" /> : <Shield className="h-4 w-4" />}
+                {isDeleting ? "Processing..." : (deviceToDelete.deleteType === "forget" ? "Forget Device" : "Unbind Device")}
               </button>
             </div>
           </div>
