@@ -52,6 +52,7 @@ function App() {
         body: JSON.stringify(formData),
       });
       if (!res.ok) throw new Error("Result not OK");
+      alert("✅ WiFi Configuration Saved!\n\nNext Step: Go to your Cloud Dashboard and enter the Pairing Code to complete the binding.");
     } catch (err) {
       alert("Bind Failed: " + err.message);
     } finally {
@@ -93,7 +94,7 @@ function App() {
         <header className="top-bar">
           <div className="logo-section">
             <div className="logo-icon">📡</div>
-            <h1>Vyom Setup</h1>
+            <h1>Vyom Setup (v2.2)</h1>
           </div>
         </header>
 
@@ -120,8 +121,11 @@ function App() {
             </div>
 
             <button className="btn-primary" onClick={handleBind} disabled={loading}>
-              {loading ? "Binding..." : "Bind Device"}
+              {loading ? "Saving..." : "Save WiFi Settings"}
             </button>
+            <p className="help-link" style={{ marginTop: '15px' }}>
+              ℹ️ To finish setup, enter code <b>{systemInfo.pairing_code}</b> in your Cloud Dashboard.
+            </p>
           </div>
         </main>
       </div>
@@ -172,7 +176,7 @@ function App() {
             <h3>Local Camera Stream</h3>
             <div className="stream-container" style={{ marginBottom: '20px', background: '#000', borderRadius: '8px', overflow: 'hidden', minHeight: '300px' }}>
               <img
-                src={`http://${window.location.hostname}:8081`}
+                src="/api/stream"
                 alt="Local Stream"
                 style={{ width: '100%', display: 'block' }}
               />

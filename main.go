@@ -26,7 +26,7 @@ import (
 // --- Configuration Constants ---
 const (
 	ConfigFileName = "demo_config.json"
-	SetupPort      = ":8080"
+	SetupPort      = ":8085" // Changed to 8085 to bust cache
 	MavlinkAddress = "udp://:14550"
 )
 
@@ -152,12 +152,56 @@ func startWebServer() {
 	mux.HandleFunc("/api/update-config", handleUpdateConfig)
 	mux.HandleFunc("/api/wifi-scan", handleWifiScan)
 	mux.HandleFunc("/api/save-config", handleSaveConfig)
+	mux.HandleFunc("/api/stream", handleLocalStream)
 
 	fs := http.FileServer(http.Dir("./ui/dist"))
 	mux.Handle("/", fs)
 
 	if err := http.ListenAndServe(SetupPort, corsMiddleware(mux)); err != nil {
 		log.Fatalf("Web Server failed: %v", err)
+	}
+}
+
+func handleLocalStream(w http.ResponseWriter, r *http.Request) {
+	// 1. Connect to GStreamer's raw TCP output with Retry
+	var conn net.Conn
+	var err error
+
+	// Try for 5 seconds
+	for i := 0; i < 10; i++ {
+		conn, err = net.Dial("tcp", "127.0.0.1:8081")
+		if err == nil {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	if err != nil {
+		http.Error(w, "Camera Stream Unavailable", 503)
+		log.Printf("[Proxy] Failed to connect to GStreamer (127.0.0.1:8081): %v", err)
+		return
+	}
+	defer conn.Close()
+
+	// 2. Set headers for MJPEG Stream
+	w.Header().Set("Content-Type", "multipart/x-mixed-replace; boundary=vyomboundary")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	// 3. Proxy the bytes directly
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := conn.Read(buf)
+		if err != nil {
+			break
+		}
+		if _, err := w.Write(buf[:n]); err != nil {
+			break
+		}
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
 	}
 }
 
@@ -458,18 +502,30 @@ func telemetryAndClaimLoop(ctx context.Context, room *lksdk.Room) {
 			}
 
 		case <-claimTicker.C:
-			// Check Claim Status
-			deviceStatusMutex.RLock()
-			claimed := deviceStatus.IsClaimed
-			deviceStatusMutex.RUnlock()
-
-			if !claimed {
-				isClaimed, err := apiClient.CheckClaim()
-				if err == nil && isClaimed {
-					log.Println(">>> DEVICE CLAIMED BY USER! <<<")
-					setStatus(true, true, true)
-				}
+			// Check Claim Status Periodically
+			isServerClaimed, err := apiClient.CheckClaim()
+			if err != nil {
+				log.Printf("[Loop] CheckClaim Error: %v", err)
+				continue
 			}
+
+			deviceStatusMutex.Lock() // Write Lock
+			wasClaimed := deviceStatus.IsClaimed
+
+			// Update Status
+			deviceStatus.IsClaimed = isServerClaimed
+
+			// State Transitions
+			if !wasClaimed && isServerClaimed {
+				log.Println(">>> DEVICE CLAIMED BY USER! <<<")
+				// Force status update (redundant but safe)
+				deviceStatus.IsConfigured = true
+				deviceStatus.IsConnected = true
+			} else if wasClaimed && !isServerClaimed {
+				log.Println(">>> DEVICE UNBOUND (Soft Release) <<<")
+				// Device released by user. We stay connected but show Bind Screen.
+			}
+			deviceStatusMutex.Unlock()
 		}
 	}
 }
@@ -587,6 +643,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(200)
 			return
@@ -615,6 +672,12 @@ func startCamera(room *lksdk.Room) {
 	cameraCancel = cancel
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("⚠️ GStreamer/IVF Panic Recovered: %v", r)
+			}
+		}()
+
 		// Delay to ensure previous ffmpeg is fully dead and device valid
 		time.Sleep(3 * time.Second)
 
@@ -628,6 +691,8 @@ func startCamera(room *lksdk.Room) {
 			width, height = 640, 480
 		}
 
+		log.Printf("Starting GStreamer Pipeline: %dx%d", width, height)
+
 		// GStreamer Pipeline:
 		// 1. v4l2src -> raw video
 		// 2. Tee -> Branch A (LiveKit/VP8), Branch B (Local/MJPEG)
@@ -635,25 +700,19 @@ func startCamera(room *lksdk.Room) {
 		// Branch B: jpegenc -> multipartmux -> tcpserversink (Port 8081)
 
 		gstCmd := fmt.Sprintf(
-			"v4l2src device=/dev/video0 ! video/x-raw,width=%d,height=%d,framerate=30/1 ! "+
+			"v4l2src device=/dev/video0 ! video/x-raw,width=%d,height=%d,framerate=30/1 ! videoconvert ! video/x-raw,format=I420 ! "+
 				"tee name=t ! "+
-				"queue ! vp8enc error-resilient=1 ! ivfenc ! pipe://%s "+
-				"t. ! queue ! jpegenc ! multipartmux boundary=--boundary ! tcpserversink host=0.0.0.0 port=8081",
+				"queue max-size-buffers=2 leaky=downstream ! vp8enc error-resilient=1 ! video/x-vp8 ! queue ! avmux_ivf ! filesink location=%s sync=false async=false "+
+				"t. ! queue ! videoscale ! video/x-raw,width=320,height=240 ! jpegenc ! multipartmux boundary=vyomboundary ! tcpserversink host=127.0.0.1 port=8081 sync=false",
 			width, height, pipePath,
 		)
 
 		log.Println("Starting GStreamer Pipeline:", gstCmd)
-		cmd := exec.CommandContext(ctx, "gst-launch-1.0", "-v", "--no-position",
-			"v4l2src", fmt.Sprintf("device=/dev/video0"), "!",
-			fmt.Sprintf("video/x-raw,width=%d,height=%d,framerate=30/1", width, height), "!",
-			"tee", "name=t", "!",
-			"queue", "!", "vp8enc", "error-resilient=1", "!", "ivfenc", "!", fmt.Sprintf("pipe://%s", pipePath),
-			"t.", "!", "queue", "!", "jpegenc", "!", "multipartmux", "boundary=--boundary", "!", "tcpserversink", "host=0.0.0.0", "port=8081",
-		)
+
 		// Note: The constructed string was just for logging/reference. Exec requires args split.
 		// Actually, gst-launch-1.0 parsing can be tricky with split args.
 		// Let's use 'sh -c' to avoid splitting headaches for complex pipelines.
-		cmd = exec.CommandContext(ctx, "sh", "-c", "gst-launch-1.0 -v "+gstCmd)
+		cmd := exec.CommandContext(ctx, "sh", "-c", "gst-launch-1.0 -v "+gstCmd)
 
 		// Capture Stderr for debugging
 		var stderr bytes.Buffer
@@ -718,13 +777,30 @@ func startCamera(room *lksdk.Room) {
 		}()
 
 		time.Sleep(1 * time.Second)
-		file, err := os.OpenFile(pipePath, os.O_RDONLY, os.ModeNamedPipe)
+		// Wait for pipe to have data (GStreamer actually started writing)
+		waitForPipe := 0
+		for waitForPipe < 10 {
+			info, err := os.Stat(pipePath)
+			if err == nil && info.Size() > 0 {
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+			waitForPipe++
+		}
+
+		file, err := os.Open(pipePath)
 		if err != nil {
 			log.Printf("Failed to open pipe: %v", err)
 			return
 		}
-		defer file.Close()
 
+		// Create IVF Reader
+		ivf, _, err := ivfreader.NewWith(file)
+		if err != nil {
+			log.Printf("Failed to create IVF reader: %v", err)
+			file.Close()
+			return
+		}
 		track, _ := lksdk.NewLocalSampleTrack(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8, ClockRate: 90000})
 
 		// Retry Loop for PublishTrack
@@ -760,7 +836,7 @@ func startCamera(room *lksdk.Room) {
 			}
 		}()
 
-		ivf, _, _ := ivfreader.NewWith(file)
+		// ivf reader already created above.
 		frameCnt := 0
 		for {
 			select {

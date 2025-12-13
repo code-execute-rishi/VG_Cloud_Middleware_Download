@@ -33,15 +33,20 @@ body {
   max-width: 600px;
   margin: 0 auto;
   width: 100%;
+  width: 100%;
   background: var(--bg-color);
   min-height: 100vh;
 }
 
 /* Header */
 .top-bar {
-  padding: 1.5rem 1.5rem 1rem;
-  background: var(--card-bg);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+  padding: 1rem 2rem;
+  background: #ffffff;
+  border-bottom: 1px solid #e5e5e5;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02);
 }
 
 .logo-section {
@@ -64,8 +69,10 @@ body {
 
 .logo-text h1 {
   margin: 0;
-  font-size: 1.25rem;
-  font-weight: 700;
+  font-size: 1.1rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: #111;
 }
 
 .subtitle {
@@ -97,6 +104,14 @@ body {
   gap: 0.5rem;
   position: relative;
   white-space: nowrap;
+  transition: all 0.2s ease;
+  border-bottom: 2px solid transparent;
+  /* Prevent jump on active */
+}
+
+.tab-btn:hover {
+  color: var(--primary-color);
+  background: rgba(0, 0, 0, 0.02);
 }
 
 .tab-btn.active {
@@ -163,6 +178,14 @@ body {
   gap: 0.5rem;
   font-size: 0.85rem;
   color: var(--text-sub);
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+  text-align: center;
+  margin-top: 1rem;
 }
 
 .status-badge::before {
