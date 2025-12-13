@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import "./App.css";
+import MJPEGStream from './components/MJPEGStream';
 
 function App() {
   const [view, setView] = useState("dashboard"); // 'dashboard', 'camera'
@@ -173,12 +174,13 @@ function App() {
 
         {view === 'camera' && (
           <div className="card">
+
+
             <h3>Local Camera Stream</h3>
             <div className="stream-container" style={{ marginBottom: '20px', background: '#000', borderRadius: '8px', overflow: 'hidden', minHeight: '300px' }}>
-              <img
+              <MJPEGStream
                 src="/api/stream"
                 alt="Local Stream"
-                style={{ width: '100%', display: 'block' }}
               />
             </div>
 
