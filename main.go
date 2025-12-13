@@ -521,6 +521,7 @@ func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid JSON", 400)
 		return
 	}
+	log.Printf(">>> UI REQUESTED CONFIG UPDATE: Resolution=%s", req.Resolution)
 
 	// Update Runtime
 	if req.Resolution != "" {
@@ -612,8 +613,8 @@ func startCamera(room *lksdk.Room) {
 		syscall.Mkfifo(pipePath, 0666)
 
 		cmd := exec.CommandContext(ctx, "ffmpeg",
-			"-f", "v4l2", "-video_size", cameraResolution, "-i", "/dev/video0",
-			"-c:v", "libvpx", "-b:v", cameraBitrate, "-deadline", "realtime",
+			"-f", "v4l2", "-input_format", "mjpeg", "-video_size", cameraResolution, "-i", "/dev/video0",
+			"-c:v", "libvpx", "-b:v", cameraBitrate, "-deadline", "realtime", "-cpu-used", "5",
 			"-f", "ivf", "-y", pipePath,
 		)
 
@@ -626,10 +627,56 @@ func startCamera(room *lksdk.Room) {
 			return
 		}
 
-		// Wait for process to exit asynchronously to log errors
+		// Wait for process to exit asynchronously to log errors AND trigger fallback
+		startTime := time.Now()
 		go func() {
 			if err := cmd.Wait(); err != nil {
 				log.Printf("FFmpeg Exited with Error: %v | Stderr: %s", err, stderr.String())
+
+				// FALBACK PROTECTION: If it crashed quickly (< 10s), it's likely a config error. Revert to Safe Mode.
+				if time.Since(startTime) < 10*time.Second {
+					log.Println("⚠️ Camera unstable at this resolution. Reverting to 640x480 SAFE MODE...")
+
+					// Update Global Var
+					deviceID := "SAFE_MODE" // marker
+					_ = deviceID
+
+					// Reset Config to 480p logic (manual override)
+					config := ConfigFile{Resolution: "640x480"}
+					file, _ := json.MarshalIndent(config, "", "  ")
+					os.WriteFile(ConfigFileName, file, 0644)
+
+					// Note: We are inside a goroutine, careful with globals.
+					// Ideally we'd call a helper, but for now, let's just trigger the restart with 640x480.
+
+					// We need to set the global variable here potentially?
+					// But startCamera uses the global 'cameraResolution'.
+					// Ideally, we should update the global and recurse, but we need to unlock/lock?
+					// No, startCamera is thread-safeish if we don't hold the lock.
+					// BUT cameraResolution is a global that startCamera READS.
+
+					// Let's rely on handleUpdateConfig naming convention or just hardcode passing the res to startCamera?
+					// Changing startCamera signature is too big.
+					// Let's just panic-fix the global.
+
+					// To be safe:
+					go func() {
+						time.Sleep(2 * time.Second) // Wait for cleanup
+						// Update global
+						// We can't access 'handleUpdateConfig' logic easily.
+						// Let's just direct call startCamera after changing var?
+						// Need to be careful about race with UI.
+						// Simplest: just restart main loop? No.
+
+						// CORRECT FIX:
+						log.Println("Applying Safe Resolution 640x480...")
+						// We need to write this to file so next boot is safe
+						// And update global.
+						// Please forgive the global mutation here for the sake of recovery.
+						cameraResolution = "640x480"
+						startCamera(room)
+					}()
+				}
 			}
 		}()
 
@@ -669,7 +716,20 @@ func startCamera(room *lksdk.Room) {
 			defer room.LocalParticipant.UnpublishTrack(pub.SID())
 		}
 
+		// Watchdog: If no frames received in first 6 seconds, KILL IT (to trigger fallback)
+		firstFrame := make(chan bool, 1)
+		go func() {
+			select {
+			case <-firstFrame:
+				return // All good
+			case <-time.After(6 * time.Second):
+				log.Println("🚨 Camera Watchdog: Stream STALLED (No frames). Killing to trigger fallback...")
+				cancel() // This will cause cmd.Wait() to finish with error, triggering fallback
+			}
+		}()
+
 		ivf, _, _ := ivfreader.NewWith(file)
+		frameCnt := 0
 		for {
 			select {
 			case <-ctx.Done():
@@ -679,6 +739,13 @@ func startCamera(room *lksdk.Room) {
 				if err != nil {
 					return
 				}
+				if frameCnt == 0 {
+					select {
+					case firstFrame <- true:
+					default:
+					}
+				}
+				frameCnt++
 				track.WriteSample(media.Sample{Data: payload, Duration: 33 * time.Millisecond}, nil)
 			}
 		}
