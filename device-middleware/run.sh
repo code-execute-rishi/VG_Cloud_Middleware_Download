@@ -22,7 +22,7 @@ fi
 
 # Open browser if a display is detected
 if [ -n "$DISPLAY" ]; then
-    (sleep 5 && xdg-open http://localhost:8080) &
+    (sleep 5 && xdg-open http://localhost:8085) &
 fi
 
 # Run the binary
