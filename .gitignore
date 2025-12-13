@@ -46,3 +46,11 @@ device-middleware/device-middleware
 backend/vyom-backend
 test_pipe
 
+
+# Middleware Config & Binaries
+middleware-bin
+demo_config.json
+identity.json
+device-middleware/middleware-bin
+device-middleware/demo_config.json
+device-middleware/identity.json
