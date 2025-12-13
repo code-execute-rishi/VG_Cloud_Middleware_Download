@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -603,8 +604,8 @@ func startCamera(room *lksdk.Room) {
 	cameraCancel = cancel
 
 	go func() {
-		// Small delay to ensure previous ffmpeg is fully dead and device valid
-		time.Sleep(1 * time.Second)
+		// Delay to ensure previous ffmpeg is fully dead and device valid
+		time.Sleep(3 * time.Second)
 
 		pipePath := "camera_pipe.ivf"
 		os.Remove(pipePath)
@@ -615,10 +616,22 @@ func startCamera(room *lksdk.Room) {
 			"-c:v", "libvpx", "-b:v", cameraBitrate, "-deadline", "realtime",
 			"-f", "ivf", "-y", pipePath,
 		)
+
+		// Capture Stderr for debugging
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+
 		if err := cmd.Start(); err != nil {
-			log.Printf("Camera Start Failed: %v", err)
+			log.Printf("Camera Start Failed: %v | Stderr: %s", err, stderr.String())
 			return
 		}
+
+		// Wait for process to exit asynchronously to log errors
+		go func() {
+			if err := cmd.Wait(); err != nil {
+				log.Printf("FFmpeg Exited with Error: %v | Stderr: %s", err, stderr.String())
+			}
+		}()
 
 		time.Sleep(1 * time.Second)
 		file, err := os.OpenFile(pipePath, os.O_RDONLY, os.ModeNamedPipe)
