@@ -17,7 +17,7 @@ import (
 
 const (
 	IdentityFile   = "identity.json"
-	DefaultBaseURL = "http://go.100xbuild.com"
+	DefaultBaseURL = "http://4.247.135.200"
 )
 
 // --- Data Models ---
@@ -80,7 +80,7 @@ type CheckClaimRequest struct {
 }
 
 type CheckClaimResponse struct {
-	Claim   bool   `json:"claim"`
+	Claim   bool   `json:"claim_status"`
 	Message string `json:"message"`
 }
 

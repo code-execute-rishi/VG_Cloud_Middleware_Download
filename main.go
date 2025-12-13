@@ -106,6 +106,10 @@ var (
 	deviceStatus      GlobalDeviceStatus
 	deviceStatusMutex sync.RWMutex
 
+	// Global Room Access for Restarts
+	activeRoom      *lksdk.Room
+	activeRoomMutex sync.Mutex
+
 	apiClient *BackendClient
 )
 
@@ -158,6 +162,8 @@ func startWebServer() {
 
 // --- STATE LOOP ---
 
+// --- STATE LOOP ---
+
 func runStateLoop() {
 	for {
 		// Load Config
@@ -197,33 +203,62 @@ func runStateLoop() {
 			continue
 		}
 
+		// 2.5 Check Claim Status IMMEDIATELY
+		isClaimed, _ := apiClient.CheckClaim()
+		if isClaimed {
+			log.Println("[Loop] Device is ALREADY Claimed.")
+		}
+
 		// 3. Connect LiveKit
+		// Setup Context for Disconnect detection
+		ctx, cancel := context.WithCancel(context.Background())
+
+		cb := lksdk.NewRoomCallback()
+		cb.OnDisconnected = func() {
+			log.Println("[Callback] Room Disconnected. Cancelling loop context.")
+			cancel()
+		}
+
 		log.Printf("[Loop] Connecting to Room: %s", authRes.RoomName)
-		room, err := lksdk.ConnectToRoomWithToken(authRes.LiveKitURL, authRes.LiveKitToken, lksdk.NewRoomCallback())
+		room, err := lksdk.ConnectToRoomWithToken(authRes.LiveKitURL, authRes.LiveKitToken, cb)
 		if err != nil {
 			log.Printf("[Loop] LiveKit Connect Failed: %v", err)
+			cancel() // Clean up context
 			time.Sleep(5 * time.Second)
 			continue
 		}
 
+		// Update Global Active Room
+		activeRoomMutex.Lock()
+		activeRoom = room
+		activeRoomMutex.Unlock()
+
 		log.Println("[Loop] Connected! Joining Mission.")
-		setStatus(true, true, false) // Connected
+		setStatus(true, true, isClaimed) // Updated with actual claim status
 
 		// 4. Start Subsystems
 		startCamera(room)
 
 		// 5. Telemetry & Claim Check Loop
-		// We block here unless connection is lost
-		telemetryAndClaimLoop(room)
+		// We block here until ctx is done (disconnect)
+		telemetryAndClaimLoop(ctx, room)
 
-		// If we return, it means we lost connection or need restart
-		room.Disconnect()
-		log.Println("[Loop] Connection Lost. Restarting loop...")
+		// Cleanup
+		cancel() // Ensure context is closed
+
+		activeRoomMutex.Lock()
+		activeRoom = nil
+		activeRoomMutex.Unlock()
+
+		room.Disconnect()           // Ensure disconnected
+		time.Sleep(4 * time.Second) // Increased delay to ensure clean disconnect
+
+		log.Println("[Loop] Connection Lost/Restarting. Restarting loop...")
 		time.Sleep(2 * time.Second)
 	}
 }
 
-func telemetryAndClaimLoop(room *lksdk.Room) {
+func telemetryAndClaimLoop(ctx context.Context, room *lksdk.Room) {
 	// 1. Initialize MAVLink Node
 	node, err := gomavlib.NewNode(gomavlib.NodeConf{
 		Endpoints:   []gomavlib.EndpointConf{gomavlib.EndpointUDPServer{Address: ":14550"}},
@@ -260,33 +295,37 @@ func telemetryAndClaimLoop(room *lksdk.Room) {
 	// 3. Start MAVLink Listener Routine
 	go func() {
 		log.Println("MAVLink Listener Started on :14550")
-		for evt := range node.Events() {
-			if frm, ok := evt.(*gomavlib.EventFrame); ok {
-				dataMutex.Lock()
-				switch msg := frm.Message().(type) {
-				case *common.MessageGlobalPositionInt:
-					telemLat = msg.Lat
-					telemLon = msg.Lon
-					telemAlt = msg.Alt // mm
-					telemHdg = msg.Hdg
-				case *common.MessageAttitude:
-					telemRoll = msg.Roll
-					telemPitch = msg.Pitch
-					telemYaw = msg.Yaw
-				case *common.MessageSysStatus:
-					telemBatt = int(msg.BatteryRemaining)
-					telemVolt = msg.VoltageBattery
-				case *common.MessageVfrHud:
-					telemAirSpeed = msg.Airspeed
-					telemGndSpeed = msg.Groundspeed
-					telemThrottle = msg.Throttle
-					// VFR_HUD also has heading/alt, but GlobalPos is usually better for nav
-				case *common.MessageNavControllerOutput:
-					telemWpDist = msg.WpDist
-				case *common.MessageMissionCurrent:
-					telemWpSeq = msg.Seq
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case evt := <-node.Events():
+				if frm, ok := evt.(*gomavlib.EventFrame); ok {
+					dataMutex.Lock()
+					switch msg := frm.Message().(type) {
+					case *common.MessageGlobalPositionInt:
+						telemLat = msg.Lat
+						telemLon = msg.Lon
+						telemAlt = msg.Alt // mm
+						telemHdg = msg.Hdg
+					case *common.MessageAttitude:
+						telemRoll = msg.Roll
+						telemPitch = msg.Pitch
+						telemYaw = msg.Yaw
+					case *common.MessageSysStatus:
+						telemBatt = int(msg.BatteryRemaining)
+						telemVolt = msg.VoltageBattery
+					case *common.MessageVfrHud:
+						telemAirSpeed = msg.Airspeed
+						telemGndSpeed = msg.Groundspeed
+						telemThrottle = msg.Throttle
+					case *common.MessageNavControllerOutput:
+						telemWpDist = msg.WpDist
+					case *common.MessageMissionCurrent:
+						telemWpSeq = msg.Seq
+					}
+					dataMutex.Unlock()
 				}
-				dataMutex.Unlock()
 			}
 		}
 	}()
@@ -303,10 +342,12 @@ func telemetryAndClaimLoop(room *lksdk.Room) {
 
 	for {
 		select {
+		case <-ctx.Done():
+			log.Println("[Loop] Context Done (Disconnected). Exiting Telemetry Loop.")
+			return
 		case <-telemTicker.C:
 			// --- CLOUD SYNC (Low Freq) ---
 			dataMutex.RLock()
-			// Convert to standard units for Cloud
 			cLat := float64(telemLat) / 1e7
 			cLon := float64(telemLon) / 1e7
 			cAlt := float32(telemAlt) / 1000.0
@@ -323,7 +364,6 @@ func telemetryAndClaimLoop(room *lksdk.Room) {
 		case <-fastTicker.C:
 			// --- LIVEKIT HUD (High Freq) ---
 			dataMutex.RLock()
-			// Capture current state
 			curRoll, curPitch, curYaw := telemRoll, telemPitch, telemYaw
 			curLat, curLon, curAlt, curHdg := telemLat, telemLon, telemAlt, telemHdg
 			curAirSpd, curGndSpd := telemAirSpeed, telemGndSpeed
@@ -351,7 +391,7 @@ func telemetryAndClaimLoop(room *lksdk.Room) {
 					"lat":          curLat,
 					"lon":          curLon,
 					"alt":          curAlt,
-					"relative_alt": curAlt, // defaulting relative to absolute for now
+					"relative_alt": curAlt,
 					"hdg":          curHdg,
 					"vx":           0, "vy": 0, "vz": 0,
 				},
@@ -429,14 +469,14 @@ func handleSystemInfo(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]interface{}{
 		"pairing_code": apiClient.Identity.PairingCode,
 		"device_id":    apiClient.Identity.NodeID,
-		"version":      "v2.0.0-reset",
+		"version":      "v2.0.1-patched",
 	}
 	jsonResponse(w, resp)
 }
 
 func handleStatus(w http.ResponseWriter, r *http.Request) {
-	deviceStatusMutex.RLock()
-	defer deviceStatusMutex.RUnlock()
+	deviceStatusMutex.Lock() // Fixed: Using Lock instead of RLock because we modify the struct
+	defer deviceStatusMutex.Unlock()
 
 	// Update camera config in status live
 	deviceStatus.Camera = CameraConfig{Resolution: cameraResolution}
@@ -464,11 +504,6 @@ func handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 	file, _ := json.MarshalIndent(config, "", "  ")
 	os.WriteFile(ConfigFileName, file, 0644)
 
-	// Note: We DO NOT reboot anymore. The main loop will pick up the file on next iteration.
-	// But the main loop might be sleeping in "No Config" state.
-	// Actually, the main loop checks 'os.Stat' then sleeps 2s.
-	// So it will pick it up automatically within 2 seconds!
-
 	jsonResponse(w, map[string]string{"status": "success", "message": "Saved. Connecting..."})
 }
 
@@ -489,12 +524,19 @@ func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	// Update Runtime
 	if req.Resolution != "" {
 		cameraResolution = req.Resolution
-		// Restart camera if needed (Logic omitted for brevity, but variable is updated)
-		startCamera(nil) // Trigger logic to restart? Ideally yes.
+
+		// Hot-Reload Camera (No Disconnect)
+		activeRoomMutex.Lock()
+		room := activeRoom
+		activeRoomMutex.Unlock()
+
+		if room != nil {
+			log.Println("Config Changed. Restarting Camera Stream Only...")
+			startCamera(room)
+		}
 	}
 
 	// Update File
-	// Read existing to preserve SSID/Pass
 	data, _ := os.ReadFile(ConfigFileName)
 	var config ConfigFile
 	json.Unmarshal(data, &config)
@@ -548,7 +590,6 @@ func jsonResponse(w http.ResponseWriter, data interface{}) {
 
 func startCamera(room *lksdk.Room) {
 	if room == nil {
-		// Just update variable, next connection will use it
 		return
 	}
 
@@ -562,6 +603,9 @@ func startCamera(room *lksdk.Room) {
 	cameraCancel = cancel
 
 	go func() {
+		// Small delay to ensure previous ffmpeg is fully dead and device valid
+		time.Sleep(1 * time.Second)
+
 		pipePath := "camera_pipe.ivf"
 		os.Remove(pipePath)
 		syscall.Mkfifo(pipePath, 0666)
@@ -579,14 +623,35 @@ func startCamera(room *lksdk.Room) {
 		time.Sleep(1 * time.Second)
 		file, err := os.OpenFile(pipePath, os.O_RDONLY, os.ModeNamedPipe)
 		if err != nil {
+			log.Printf("Failed to open pipe: %v", err)
 			return
 		}
 		defer file.Close()
 
 		var width, height uint32
-		fmt.Sscanf(cameraResolution, "%dx%d", &width, &height)
+		if n, _ := fmt.Sscanf(cameraResolution, "%dx%d", &width, &height); n != 2 {
+			log.Printf("Invalid Resolution format '%s', defaulting to 640x480", cameraResolution)
+			width, height = 640, 480
+		}
 		track, _ := lksdk.NewLocalSampleTrack(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8, ClockRate: 90000})
-		pub, _ := room.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{Name: "camera_feed", VideoWidth: int(width), VideoHeight: int(height)})
+
+		// Retry Loop for PublishTrack
+		var pub *lksdk.LocalTrackPublication
+		var pubErr error
+		for i := 0; i < 3; i++ {
+			pub, pubErr = room.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{Name: "camera_feed", VideoWidth: int(width), VideoHeight: int(height)})
+			if pubErr == nil {
+				break
+			}
+			log.Printf("PublishTrack failed (attempt %d/3): %v", i+1, pubErr)
+			time.Sleep(1 * time.Second)
+		}
+
+		if pubErr != nil {
+			log.Printf("Camera Publish Failed Final: %v", pubErr)
+			return
+		}
+
 		if pub != nil {
 			defer room.LocalParticipant.UnpublishTrack(pub.SID())
 		}

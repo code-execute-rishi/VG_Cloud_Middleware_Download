@@ -18,4 +18,4 @@ if [ -n "$DISPLAY" ]; then
 fi
 
 # Run the binary
-./middleware-bin
+./middleware-bin "$@"
