@@ -81,46 +81,37 @@ body {
   color: var(--text-sub);
 }
 
-/* Tabs */
-.tabs {
+/* Navigation Tabs */
+.nav-links {
   display: flex;
-  background: var(--card-bg);
-  padding: 0 1.5rem;
-  border-bottom: 1px solid var(--border-color);
-  overflow-x: auto;
+  gap: 0.5rem;
+  background: #f5f5f7;
+  padding: 4px;
+  border-radius: 8px;
 }
 
-.tab-btn {
-  background: none;
+.nav-tab {
+  background: transparent;
   border: none;
-  padding: 1rem 1.5rem;
+  padding: 0.5rem 1rem;
   font-family: inherit;
-  font-size: 0.95rem;
+  font-size: 0.9rem;
   font-weight: 500;
   color: var(--text-sub);
   cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  position: relative;
-  white-space: nowrap;
+  border-radius: 6px;
   transition: all 0.2s ease;
-  border-bottom: 2px solid transparent;
-  /* Prevent jump on active */
 }
 
-.tab-btn:hover {
+.nav-tab:hover {
+  color: var(--text-main);
+}
+
+.nav-tab.active {
+  background: #ffffff;
   color: var(--primary-color);
-  background: rgba(0, 0, 0, 0.02);
-}
-
-.tab-btn.active {
-  color: var(--primary-color);
-  border-bottom: 2px solid var(--primary-color);
-}
-
-.tab-btn .icon {
-  font-size: 1.1rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  font-weight: 600;
 }
 
 /* Main Content */

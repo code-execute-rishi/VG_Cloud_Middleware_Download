@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -99,7 +100,6 @@ type LiveKitDataMessage struct {
 // --- Global State ---
 var (
 	cameraResolution = "640x480"
-	cameraBitrate    = "500k"
 	cameraMutex      sync.Mutex
 	cameraCancel     context.CancelFunc
 
@@ -177,7 +177,7 @@ func handleLocalStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		http.Error(w, "Camera Stream Unavailable", 503)
+		http.Error(w, "Camera Stream Unavailable", http.StatusServiceUnavailable)
 		log.Printf("[Proxy] Failed to connect to GStreamer (127.0.0.1:8081): %v", err)
 		return
 	}
@@ -243,7 +243,7 @@ func runStateLoop() {
 		log.Println("[Loop] Authenticating...")
 		authRes, err := apiClient.Authenticate()
 		if err != nil {
-			if err.Error() == "DEVICE_FORGOTTEN" {
+			if strings.Contains(err.Error(), "DEVICE_FORGOTTEN") {
 				log.Println("⚠️ DEVICE FORGOTTEN BY CLOUD. RESETTING IDENTITY... ⚠️")
 				if resetErr := apiClient.ResetIdentity(); resetErr != nil {
 					log.Printf("[Loop] Reset Identity Failed: %v", resetErr)
@@ -505,6 +505,13 @@ func telemetryAndClaimLoop(ctx context.Context, room *lksdk.Room) {
 			// Check Claim Status Periodically
 			isServerClaimed, err := apiClient.CheckClaim()
 			if err != nil {
+				if strings.Contains(err.Error(), "DEVICE_FORGOTTEN") {
+					log.Println(">>> DEVICE FORGOTTEN (Hard Reset) <<<")
+					log.Println("Wiping Identity and Restarting...")
+					apiClient.ResetIdentity()
+					os.Exit(0) // Supervisor will restart with new identity
+				}
+
 				log.Printf("[Loop] CheckClaim Error: %v", err)
 				continue
 			}
@@ -524,6 +531,19 @@ func telemetryAndClaimLoop(ctx context.Context, room *lksdk.Room) {
 			} else if wasClaimed && !isServerClaimed {
 				log.Println(">>> DEVICE UNBOUND (Soft Release) <<<")
 				// Device released by user. We stay connected but show Bind Screen.
+			}
+
+			// Disambiguate: "Unclaimed" vs "Deleted"
+			// If CheckClaim returns false, it could be valid-unclaimed OR deleted.
+			// We must check Liveness to confirm existence.
+			if !isServerClaimed {
+				if err := apiClient.CheckLiveness(); err != nil {
+					if strings.Contains(err.Error(), "DEVICE_FORGOTTEN") {
+						log.Println(">>> DEVICE FORGOTTEN (Hard Reset Confirmed) <<<")
+						apiClient.ResetIdentity()
+						os.Exit(0)
+					}
+				}
 			}
 			deviceStatusMutex.Unlock()
 		}
@@ -552,7 +572,7 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 
 func handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(w, "Method not allowed", 405)
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -576,7 +596,7 @@ func handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 
 func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(w, "Method not allowed", 405)
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -700,9 +720,9 @@ func startCamera(room *lksdk.Room) {
 		// Branch B: jpegenc -> multipartmux -> tcpserversink (Port 8081)
 
 		gstCmd := fmt.Sprintf(
-			"v4l2src device=/dev/video0 ! video/x-raw,width=%d,height=%d,framerate=30/1 ! videoconvert ! video/x-raw,format=I420 ! "+
+			"v4l2src device=/dev/video0 ! image/jpeg,width=%d,height=%d,framerate=30/1 ! jpegdec ! videoconvert ! video/x-raw,format=I420 ! "+
 				"tee name=t ! "+
-				"queue max-size-buffers=2 leaky=downstream ! vp8enc error-resilient=1 ! video/x-vp8 ! queue ! avmux_ivf ! filesink location=%s sync=false async=false "+
+				"queue max-size-buffers=4 leaky=downstream ! vp8enc error-resilient=1 deadline=1 keyframe-max-dist=30 cpu-used=4 ! video/x-vp8 ! queue ! avmux_ivf ! filesink location=%s sync=false async=false "+
 				"t. ! queue ! videoscale ! video/x-raw,width=320,height=240 ! jpegenc ! multipartmux boundary=vyomboundary ! tcpserversink host=127.0.0.1 port=8081 sync=false",
 			width, height, pipePath,
 		)
@@ -727,49 +747,28 @@ func startCamera(room *lksdk.Room) {
 		startTime := time.Now()
 		go func() {
 			if err := cmd.Wait(); err != nil {
+				// IGNORE error if we killed it intentionally (Config Change)
+				if ctx.Err() == context.Canceled {
+					log.Println("Camera stopped intentionally (Context Cancelled).")
+					return
+				}
+
 				log.Printf("FFmpeg Exited with Error: %v | Stderr: %s", err, stderr.String())
 
 				// FALBACK PROTECTION: If it crashed quickly (< 10s), it's likely a config error. Revert to Safe Mode.
 				if time.Since(startTime) < 10*time.Second {
 					log.Println("⚠️ Camera unstable at this resolution. Reverting to 640x480 SAFE MODE...")
 
-					// Update Global Var
-					deviceID := "SAFE_MODE" // marker
-					_ = deviceID
-
-					// Reset Config to 480p logic (manual override)
-					config := ConfigFile{Resolution: "640x480"}
-					file, _ := json.MarshalIndent(config, "", "  ")
-					os.WriteFile(ConfigFileName, file, 0644)
-
-					// Note: We are inside a goroutine, careful with globals.
-					// Ideally we'd call a helper, but for now, let's just trigger the restart with 640x480.
-
-					// We need to set the global variable here potentially?
-					// But startCamera uses the global 'cameraResolution'.
-					// Ideally, we should update the global and recurse, but we need to unlock/lock?
-					// No, startCamera is thread-safeish if we don't hold the lock.
-					// BUT cameraResolution is a global that startCamera READS.
-
-					// Let's rely on handleUpdateConfig naming convention or just hardcode passing the res to startCamera?
-					// Changing startCamera signature is too big.
-					// Let's just panic-fix the global.
-
-					// To be safe:
 					go func() {
 						time.Sleep(2 * time.Second) // Wait for cleanup
-						// Update global
-						// We can't access 'handleUpdateConfig' logic easily.
-						// Let's just direct call startCamera after changing var?
-						// Need to be careful about race with UI.
-						// Simplest: just restart main loop? No.
-
-						// CORRECT FIX:
 						log.Println("Applying Safe Resolution 640x480...")
-						// We need to write this to file so next boot is safe
-						// And update global.
-						// Please forgive the global mutation here for the sake of recovery.
 						cameraResolution = "640x480"
+
+						// Update config file
+						config := ConfigFile{Resolution: "640x480"}
+						file, _ := json.MarshalIndent(config, "", "  ")
+						os.WriteFile(ConfigFileName, file, 0644)
+
 						startCamera(room)
 					}()
 				}

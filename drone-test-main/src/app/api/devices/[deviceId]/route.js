@@ -5,7 +5,7 @@ export async function PATCH(request, { params }) {
   try {
     const { getToken } = await auth();
     const token = await getToken();
-    
+
     if (!token) {
       return NextResponse.json(
         { error: 'Unauthorized' },
@@ -43,7 +43,7 @@ export async function DELETE(request, { params }) {
   try {
     const { getToken } = await auth();
     const token = await getToken();
-    
+
     if (!token) {
       return NextResponse.json(
         { error: 'Unauthorized' },
@@ -52,9 +52,12 @@ export async function DELETE(request, { params }) {
     }
 
     const { deviceId } = await params;
+    const { searchParams } = new URL(request.url);
+    const query = searchParams.toString();
+    const url = `${process.env.BACKEND_URL}/api/v1/devices/${deviceId}${query ? `?${query}` : ''}`;
 
     const response = await fetch(
-      `${process.env.BACKEND_URL}/api/v1/devices/${deviceId}`,
+      url,
       {
         method: 'DELETE',
         headers: {

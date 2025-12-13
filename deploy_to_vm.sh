@@ -43,7 +43,9 @@ ssh -o StrictHostKeyChecking=no -i $KEY_FILE $REMOTE_USER@$VM_IP << 'EOF'
   
   # Ensure clean restart
   sudo docker-compose down || true
-  sudo docker-compose up --build -d
+  # Force rebuild to pick up code changes (ignore cache)
+  sudo docker-compose build --no-cache
+  sudo docker-compose up -d
   
   echo ">>> DEPLOYMENT SUCCESSFUL!"
   echo ">>> Backend running on port 8080"

@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -240,6 +241,26 @@ func (c *BackendClient) UpdateTelemetry(data TelemetryUpdate) error {
 	return c.post(url, data, nil)
 }
 
+func (c *BackendClient) CheckLiveness() error {
+	// UPGRADE: Use full Authenticate() check instead of just Challenge.
+	// We observed that Challenge endpoint might return 200 OK momentarily after deletion (race/cache),
+	// whereas Authenticate (Verify) accurately fails with DEVICE_FORGOTTEN/Unauthorized.
+	_, err := c.Authenticate()
+
+	if err != nil {
+		if strings.Contains(err.Error(), "DEVICE_FORGOTTEN") {
+			log.Printf("[Liveness] Probe Failed (Hard Delete Confirm): %v", err)
+			return fmt.Errorf("DEVICE_FORGOTTEN") // Normalize error
+		}
+		log.Printf("[Liveness] Probe Warning: %v", err)
+		// Determine if other errors should count as death? For now, only explicit forgotten.
+		return err
+	}
+
+	log.Printf("[Liveness] Probe Success (Device Exists)")
+	return nil
+}
+
 // --- Helper ---
 
 func (c *BackendClient) post(path string, payload interface{}, target interface{}) error {
@@ -260,12 +281,13 @@ func (c *BackendClient) post(path string, payload interface{}, target interface{
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
-		// Specific Check for Identity Reset triggers
-		// Backend returns 400 if DeviceID not found in GetChallenge
-		if path == "/api/v1/devices/auth/challenge" && resp.StatusCode == 400 {
-			// This is a candidate for Reset, but we should be sure.
-			// The backend says "No devices found with this device ID"
-			if bytes.Contains(respBody, []byte("No devices found")) || bytes.Contains(respBody, []byte("Device with this deviceID doesn't exist")) {
+
+		// Universal Check for Identity Reset (400/401/404 on Auth/Check-Claim)
+		if resp.StatusCode == 400 || resp.StatusCode == 404 || resp.StatusCode == 401 {
+			bodyStr := string(respBody)
+			if bytes.Contains(respBody, []byte("No devices found")) ||
+				bytes.Contains(respBody, []byte("Device with this deviceID doesn't exist")) ||
+				strings.Contains(bodyStr, "not found") { // Covers generic 404
 				return fmt.Errorf("DEVICE_FORGOTTEN")
 			}
 		}
