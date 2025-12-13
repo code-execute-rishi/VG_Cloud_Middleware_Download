@@ -10,35 +10,37 @@ export function VideoStream({ room, className = '' }) {
   useEffect(() => {
     if (!room) return;
 
+    const checkActiveStreams = () => {
+      let isActive = false;
+      room.remoteParticipants.forEach((participant) => {
+        participant.videoTrackPublications.forEach((publication) => {
+          if (publication.track && publication.isSubscribed) {
+            if (videoRef.current && publication.track.kind === 'video') {
+              publication.track.attach(videoRef.current);
+              isActive = true;
+            }
+          }
+        });
+      });
+      setIsStreaming(isActive);
+    };
+
     const handleTrackSubscribed = (track, publication, participant) => {
-      if (track.kind === 'video') {
-        if (videoRef.current) {
-          track.attach(videoRef.current);
-          setIsStreaming(true);
-        }
-      }
+      checkActiveStreams();
     };
 
     const handleTrackUnsubscribed = (track, publication, participant) => {
       track.detach();
-      if (track.kind === 'video') {
-        setIsStreaming(false);
-      }
+      checkActiveStreams();
     };
 
     room.on(RoomEvent.TrackSubscribed, handleTrackSubscribed);
     room.on(RoomEvent.TrackUnsubscribed, handleTrackUnsubscribed);
+    room.on(RoomEvent.TrackMuted, checkActiveStreams);
+    room.on(RoomEvent.TrackUnmuted, checkActiveStreams);
 
-    room.remoteParticipants.forEach((participant) => {
-      participant.videoTrackPublications.forEach((publication) => {
-        if (publication.track && publication.isSubscribed) {
-          if (videoRef.current && publication.track.kind === 'video') {
-            publication.track.attach(videoRef.current);
-            setIsStreaming(true);
-          }
-        }
-      });
-    });
+    // Initial check
+    checkActiveStreams();
 
     return () => {
       room.off(RoomEvent.TrackSubscribed, handleTrackSubscribed);

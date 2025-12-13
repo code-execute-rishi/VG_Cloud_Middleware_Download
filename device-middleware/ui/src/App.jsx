@@ -11,7 +11,7 @@ function App() {
   const [formData, setFormData] = useState({
     ssid: "",
     password: "",
-    resolution: "640x480",
+    resolution: "",
   });
 
   // Poll Status
@@ -22,10 +22,13 @@ function App() {
         if (res.ok) {
           const data = await res.json();
           setStatus(data);
-          // Sync form if configured
-          if (data.camera_config?.resolution) {
-            setFormData(prev => ({ ...prev, resolution: data.camera_config.resolution }));
-          }
+          // Sync form only if not set (Initial Load)
+          setFormData(prev => {
+            if (prev.resolution === "" && data.camera_config?.resolution) {
+              return { ...prev, resolution: data.camera_config.resolution };
+            }
+            return prev;
+          });
         }
       } catch (e) {
         console.error("Poll failed", e);
