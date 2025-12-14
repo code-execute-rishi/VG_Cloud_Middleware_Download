@@ -241,7 +241,7 @@ const DashboardOverview = ({ user }) => {
                 <button
                   type="button"
                   onClick={handleControlPanel}
-                  disabled={drone.status !== "Airborne"}
+
                   className="flex-1 flex items-center justify-center gap-1.5 px-2 py-2 text-xs font-semibold rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 hover:border-gray-400 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200"
                 >
                   <Monitor className="h-3.5 w-3.5" />
@@ -250,7 +250,7 @@ const DashboardOverview = ({ user }) => {
                 <button
                   type="button"
                   onClick={() => handleLiveStream(drone.id, drone.name)}
-                  disabled={drone.status !== "Airborne"}
+
                   className="flex-1 flex items-center justify-center gap-1.5 px-2 py-2 text-xs font-semibold rounded-md bg-gray-900 text-white hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 shadow-sm"
                 >
                   <Video className="h-3.5 w-3.5" />
