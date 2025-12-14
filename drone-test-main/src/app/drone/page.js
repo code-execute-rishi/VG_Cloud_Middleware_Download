@@ -8,7 +8,7 @@ import {
   HeadingIndicator,
   AttitudeIndicator
 } from 'react-flight-indicators';
-import { ZoomIn, ZoomOut, Link, Signal, Satellite, RotateCw, RotateCcw, ChevronUp, ChevronDown, RefreshCw } from 'lucide-react';
+import { ZoomIn, ZoomOut, Link, Signal, Satellite, RotateCw, RotateCcw, ChevronUp, ChevronDown, RefreshCw, Cpu, Camera } from 'lucide-react';
 import { VideoStream } from '@/components/livekit/VideoStream';
 
 const DroneMap = dynamic(() => import('../../components/DroneMap'), {
@@ -20,7 +20,7 @@ export default function Home() {
   const mapWidgetRef = useRef(null);
   const roomRef = useRef(null);
   const [connectionStatus, setConnectionStatus] = useState('Connecting...');
-  
+
   // MAVLink message states - one state object per message type
   const [attitude, setAttitude] = useState(null);
   const [globalPositionInt, setGlobalPositionInt] = useState(null);
@@ -33,7 +33,7 @@ export default function Home() {
   const [servoOutputRaw, setServoOutputRaw] = useState(null);
   const [rcChannels, setRcChannels] = useState(null);
   const [rawImu, setRawImu] = useState(null);
-  
+
   // UI state
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedDrone, setSelectedDrone] = useState(null);
@@ -41,7 +41,7 @@ export default function Home() {
   const [distToHome, setDistToHome] = useState(0.0);
   const [flightDist, setFlightDist] = useState(0.0);
   const [isVideoFullscreen, setIsVideoFullscreen] = useState(false);
-  
+
   // Actual devices from backend
   const [devices, setDevices] = useState([]);
   const [loadingDevices, setLoadingDevices] = useState(true);
@@ -52,7 +52,7 @@ export default function Home() {
       try {
         setLoadingDevices(true);
         console.log('📡 Fetching devices from backend...');
-        
+
         const response = await fetch('/api/devices', {
           method: 'GET',
           headers: {
@@ -67,9 +67,9 @@ export default function Home() {
 
         const devicesData = await response.json();
         console.log('✅ Devices fetched:', devicesData);
-        
+
         setDevices(devicesData);
-        
+
         // Auto-select first active device if none selected
         if (!selectedDrone && devicesData.length > 0) {
           const firstActiveDevice = devicesData.find(d => d.status === 'active') || devicesData[0];
@@ -83,7 +83,7 @@ export default function Home() {
         setLoadingDevices(false);
       }
     };
-    
+
     fetchDevices();
   }, []);
 
@@ -99,7 +99,7 @@ export default function Home() {
     try {
       if (type === 'ATTITUDE') {
         setAttitude(data);
-        
+
         if (data.yaw !== undefined && typeof window !== 'undefined' && window.updateDroneHeading) {
           const yawDeg = data.yaw * (180 / Math.PI);
           const normalizedHeading = ((yawDeg % 360) + 360) % 360;
@@ -107,16 +107,16 @@ export default function Home() {
         }
       } else if (type === 'GLOBAL_POSITION_INT') {
         setGlobalPositionInt(data);
-        
+
         if (data.lat !== undefined && data.lon !== undefined) {
           const lat = data.lat / 1e7;
           const lon = data.lon / 1e7;
           let heading = 0;
-          
+
           if (data.hdg !== undefined) {
             heading = data.hdg / 100;
           }
-          
+
           if (typeof window !== 'undefined' && window.updateDroneData) {
             window.updateDroneData(lat, lon, heading);
           } else if (typeof window !== 'undefined' && window.updateDronePosition) {
@@ -125,7 +125,7 @@ export default function Home() {
         }
       } else if (type === 'VFR_HUD') {
         setVfrHud(data);
-        
+
         if (data.heading !== undefined && typeof window !== 'undefined' && window.updateDroneHeading) {
           window.updateDroneHeading(data.heading);
         }
@@ -157,7 +157,7 @@ export default function Home() {
   const setupRoomDataListener = (room) => {
     room.on(RoomEvent.DataReceived, (payload, participant, kind, topic) => {
       console.log('📦 Data received - Topic:', topic, 'Kind:', kind);
-      
+
       if (topic === 'telemetry') {
         try {
           const messageStr = new TextDecoder().decode(payload);
@@ -187,13 +187,13 @@ export default function Home() {
     }
 
     const deviceId = selectedDrone; // This is the actual UUID from backend
-    
+
     console.log('🔌 Connecting to room for device UUID:', deviceId);
 
     const connectToLiveKit = async () => {
       try {
         setConnectionStatus('Connecting...');
-        
+
         const room = await connectToRoom(deviceId);
         roomRef.current = room;
         setConnectionStatus('Connected');
@@ -247,7 +247,7 @@ export default function Home() {
     // Prefer VFR_HUD heading, then GLOBAL_POSITION_INT, then ATTITUDE yaw
     if (vfrHud?.heading !== undefined) {
       return vfrHud.heading;
-      
+
     }
     if (globalPositionInt?.hdg !== undefined) {
       return globalPositionInt.hdg / 100; // centidegrees to degrees
@@ -351,7 +351,7 @@ export default function Home() {
 
       {/* Main Video Stream - Fullscreen when toggled */}
       {roomRef.current && (
-        <div 
+        <div
           className={`absolute top-0 left-0 w-full h-full z-[10] transition-all duration-300 bg-black ${isVideoFullscreen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
           onDoubleClick={toggleVideoFullscreen}
           style={{ cursor: 'pointer' }}
@@ -362,16 +362,32 @@ export default function Home() {
 
       {/* Small Video Widget - Bottom Left (shown when map is fullscreen) */}
       {roomRef.current && !isVideoFullscreen && (
-        <div 
+        <div
           className="absolute bottom-5 left-5 z-[1000] w-[320px] h-[240px] transition-all duration-300"
           onDoubleClick={toggleVideoFullscreen}
           style={{ cursor: 'pointer' }}
         >
           <div className="relative w-full h-full bg-black rounded-lg overflow-hidden border-2 border-gray-700 shadow-2xl">
             <VideoStream room={roomRef.current} className="w-full h-full" />
-            <div className="absolute top-2 left-2 bg-black/70 text-white text-xs px-2 py-1 rounded flex items-center gap-2 z-10">
-              <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
-              <span>LIVE</span>
+            <div className="absolute top-2 left-2 flex items-center gap-2 z-10">
+              <div className="bg-black/70 text-white text-xs px-2 py-1 rounded flex items-center gap-2">
+                <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
+                <span>LIVE</span>
+              </div>
+
+              {sysStatus && !sysStatus.fc_connected && (
+                <div className="bg-red-600/90 text-white text-xs px-2 py-1 rounded flex items-center gap-1.5" title="Flight Controller Disconnected">
+                  <Cpu size={12} />
+                  <span>FC</span>
+                </div>
+              )}
+
+              {sysStatus && !sysStatus.cam_connected && (
+                <div className="bg-red-600/90 text-white text-xs px-2 py-1 rounded flex items-center gap-1.5" title="Camera Disconnected">
+                  <Camera size={12} />
+                  <span>CAM</span>
+                </div>
+              )}
             </div>
             <div className="absolute bottom-2 left-2 bg-black/70 text-white text-xs px-2 py-1 rounded z-10">
               Double-click to expand
@@ -382,7 +398,7 @@ export default function Home() {
 
       {/* Small Map Widget - Bottom Left (shown when video is fullscreen) */}
       {isVideoFullscreen && (
-        <div 
+        <div
           className="absolute bottom-5 left-5 z-[1000] w-[320px] h-[240px] transition-all duration-300"
           onDoubleClick={toggleVideoFullscreen}
           style={{ cursor: 'pointer' }}
@@ -468,11 +484,10 @@ export default function Home() {
             <div className="flex flex-col items-center gap-3">
               <div className="flex flex-col items-center gap-1">
                 <div className="flex items-center gap-1 mb-1">
-                  <div className={`w-2 h-2 rounded-full ${
-                    connectionStatus === 'Connected' ? 'bg-green-500' : 
-                    connectionStatus === 'Connecting...' ? 'bg-yellow-500 animate-pulse' : 
-                    'bg-red-500'
-                  }`}></div>
+                  <div className={`w-2 h-2 rounded-full ${connectionStatus === 'Connected' ? 'bg-green-500' :
+                    connectionStatus === 'Connecting...' ? 'bg-yellow-500 animate-pulse' :
+                      'bg-red-500'
+                    }`}></div>
                   <span className="text-xs text-gray-400">{connectionStatus}</span>
                 </div>
               </div>
@@ -560,7 +575,7 @@ export default function Home() {
           <div className="mb-3">
             <h3 className="text-lg font-bold uppercase mb-2">Select Drone</h3>
           </div>
-          
+
           {loadingDevices ? (
             <div className="text-center py-4">
               <div className="animate-spin w-6 h-6 border-2 border-white border-t-transparent rounded-full mx-auto"></div>
@@ -580,8 +595,8 @@ export default function Home() {
                     setIsModalOpen(false);
                   }}
                   className={`p-2 rounded text-center transition-colors ${selectedDrone === device.id
-                      ? 'bg-green-500/30 border border-green-500'
-                      : 'bg-black/40 hover:bg-black/60 border border-transparent'
+                    ? 'bg-green-500/30 border border-green-500'
+                    : 'bg-black/40 hover:bg-black/60 border border-transparent'
                     }`}
                 >
                   <div>

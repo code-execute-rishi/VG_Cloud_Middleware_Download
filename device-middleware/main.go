@@ -50,10 +50,16 @@ type ConfigFile struct {
 }
 
 type GlobalDeviceStatus struct {
-	IsConfigured bool         `json:"is_configured"`
-	IsConnected  bool         `json:"is_connected"` // Cloud/LiveKit Connected
-	IsClaimed    bool         `json:"is_claimed"`
-	Camera       CameraConfig `json:"camera_config"`
+	IsConfigured bool           `json:"is_configured"`
+	IsConnected  bool           `json:"is_connected"` // Cloud/LiveKit Connected
+	IsClaimed    bool           `json:"is_claimed"`
+	Camera       CameraConfig   `json:"camera_config"`
+	Hardware     HardwareStatus `json:"hardware_status"`
+}
+
+type HardwareStatus struct {
+	FCConnected  bool `json:"fc_connected"`
+	CamConnected bool `json:"cam_connected"`
 }
 
 type CameraConfig struct {
@@ -314,13 +320,26 @@ func runStateLoop() {
 }
 
 func telemetryAndClaimLoop(ctx context.Context, room *lksdk.Room) {
-	// 1. Initialize MAVLink Node
+	// 1. Initialize MAVLink Node (Dual-Stack: UDP + Serial)
+	endpoints := []gomavlib.EndpointConf{
+		gomavlib.EndpointUDPServer{Address: ":14550"}, // Always support Simulator
+	}
+
+	// Scan for Real Hardware
+	if serialPort := GetSerialPorts(); serialPort != "" {
+		log.Printf("[MAVLink] 🔌 Auto-Detected Serial Port: %s. Binding...", serialPort)
+		endpoints = append(endpoints, gomavlib.EndpointSerial{Device: serialPort, Baud: 57600})
+	} else {
+		log.Println("[MAVLink] ⚠️ No Serial Port Found. Running in Simulator Mode (UDP Only).")
+	}
+
 	node, err := gomavlib.NewNode(gomavlib.NodeConf{
-		Endpoints:   []gomavlib.EndpointConf{gomavlib.EndpointUDPServer{Address: ":14550"}},
+		Endpoints:   endpoints,
 		Dialect:     common.Dialect,
 		OutVersion:  gomavlib.V2,
 		OutSystemID: 10,
 	})
+
 	if err != nil {
 		log.Printf("MAVLink Bind Failed: %v", err)
 		return
@@ -331,20 +350,21 @@ func telemetryAndClaimLoop(ctx context.Context, room *lksdk.Room) {
 	var (
 		dataMutex sync.RWMutex
 		// Default values to avoid nil pointers or zeros
-		telemLat      int32   = -353632615
-		telemLon      int32   = 1491652300
-		telemAlt      int32   = 10000 // mm
-		telemHdg      uint16  = 9000
-		telemBatt     int     = 100
-		telemVolt     uint16  = 12000
-		telemRoll     float32 = 0
-		telemPitch    float32 = 0
-		telemYaw      float32 = 0
-		telemAirSpeed float32 = 0
-		telemGndSpeed float32 = 0
-		telemThrottle uint16  = 0
-		telemWpDist   uint16  = 0
-		telemWpSeq    uint16  = 0
+		telemLat           int32   = -353632615
+		telemLon           int32   = 1491652300
+		telemAlt           int32   = 10000 // mm
+		telemHdg           uint16  = 9000
+		telemBatt          int     = 100
+		telemVolt          uint16  = 12000
+		telemRoll          float32 = 0
+		telemPitch         float32 = 0
+		telemYaw           float32 = 0
+		telemAirSpeed      float32 = 0
+		telemGndSpeed      float32 = 0
+		telemThrottle      uint16  = 0
+		telemWpDist        uint16  = 0
+		telemWpSeq         uint16  = 0
+		telemLastHeartbeat int64   = 0
 	)
 
 	// 3. Start MAVLink Listener Routine
@@ -378,6 +398,8 @@ func telemetryAndClaimLoop(ctx context.Context, room *lksdk.Room) {
 						telemWpDist = msg.WpDist
 					case *common.MessageMissionCurrent:
 						telemWpSeq = msg.Seq
+					case *common.MessageHeartbeat:
+						telemLastHeartbeat = time.Now().Unix()
 					}
 					dataMutex.Unlock()
 				}
@@ -425,7 +447,13 @@ func telemetryAndClaimLoop(ctx context.Context, room *lksdk.Room) {
 			curBatt, curVolt := telemBatt, telemVolt
 			curThrottle := telemThrottle
 			curWpDist, curWpSeq := telemWpDist, telemWpSeq
+			curHeartbeat := telemLastHeartbeat
 			dataMutex.RUnlock()
+
+			// Hardware Check
+			fcConnected := (time.Now().Unix() - curHeartbeat) < 5
+			_, camErr := os.Stat("/dev/video0")
+			camConnected := (camErr == nil)
 
 			// 1. ATTITUDE
 			attPayload := map[string]interface{}{
@@ -474,6 +502,8 @@ func telemetryAndClaimLoop(ctx context.Context, room *lksdk.Room) {
 				"data": map[string]interface{}{
 					"voltage_battery":   curVolt,
 					"battery_remaining": curBatt,
+					"fc_connected":      fcConnected,
+					"cam_connected":     camConnected,
 				},
 			}
 			dataSys, _ := json.Marshal(sysPayload)
@@ -531,6 +561,18 @@ func telemetryAndClaimLoop(ctx context.Context, room *lksdk.Room) {
 			} else if wasClaimed && !isServerClaimed {
 				log.Println(">>> DEVICE UNBOUND (Soft Release) <<<")
 				// Device released by user. We stay connected but show Bind Screen.
+			}
+
+			// Update Hardware Status for Local UI
+			dataMutex.RLock()
+			lastHb := telemLastHeartbeat
+			dataMutex.RUnlock()
+
+			_, vidErr := os.Stat("/dev/video0")
+
+			deviceStatus.Hardware = HardwareStatus{
+				FCConnected:  (time.Now().Unix() - lastHb) < 5,
+				CamConnected: (vidErr == nil),
 			}
 
 			// Disambiguate: "Unclaimed" vs "Deleted"
@@ -857,4 +899,23 @@ func startCamera(room *lksdk.Room) {
 			}
 		}
 	}()
+}
+
+// --- Hardware Helper Functions ---
+
+func GetSerialPorts() string {
+	// Priority List for RPi 3 + Pixhawk
+	candidates := []string{
+		"/dev/ttyACM0", // Pixhawk via USB
+		"/dev/ttyUSB0", // Telemetry Radio / FTDI
+		"/dev/ttyAMA0", // RPi UART (GPIO)
+		"/dev/serial0", // RPi Serial Alias
+	}
+
+	for _, port := range candidates {
+		if _, err := os.Stat(port); err == nil {
+			return port
+		}
+	}
+	return ""
 }
