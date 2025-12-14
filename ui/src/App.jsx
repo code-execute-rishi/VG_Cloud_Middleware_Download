@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import "./App.css";
 import MJPEGStream from './components/MJPEGStream';
+import SystemHealth from './components/SystemHealth';
 
 function App() {
   const [view, setView] = useState("dashboard"); // 'dashboard', 'camera'
@@ -155,7 +156,7 @@ function App() {
             className={`nav-tab ${view === 'camera' ? 'active' : ''}`}
             onClick={() => setView('camera')}
           >
-            Camera & Settings
+            FC/Camera Settings
           </button>
         </div>
       </header>
@@ -175,6 +176,10 @@ function App() {
         {view === 'camera' && (
           <div className="card">
 
+            <SystemHealth
+              fcConnected={status?.hardware_status?.fc_connected}
+              camConnected={status?.hardware_status?.cam_connected}
+            />
 
             <h3>Local Camera Stream</h3>
             <div className="stream-container" style={{ marginBottom: '20px', background: '#000', borderRadius: '8px', overflow: 'hidden', minHeight: '300px' }}>
