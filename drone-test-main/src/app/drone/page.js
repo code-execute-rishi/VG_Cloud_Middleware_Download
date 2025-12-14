@@ -65,14 +65,26 @@ export default function Home() {
           throw new Error(`Failed to fetch devices: ${response.status}`);
         }
 
-        const devicesData = await response.json();
+        const rawDevices = await response.json();
+        const devicesData = rawDevices.map(device => {
+          let displayStatus = device.status || "Standby";
+          if (device.flight_mode) {
+            displayStatus = device.flight_mode;
+            if (device.armed) {
+              displayStatus += " (Armed)";
+            }
+          }
+          return { ...device, status: displayStatus };
+        });
+
         console.log('✅ Devices fetched:', devicesData);
 
         setDevices(devicesData);
 
         // Auto-select first active device if none selected
         if (!selectedDrone && devicesData.length > 0) {
-          const firstActiveDevice = devicesData.find(d => d.status === 'active') || devicesData[0];
+          // Prioritize Airborne devices
+          const firstActiveDevice = devicesData.find(d => d.status && d.status.includes('Airborne')) || devicesData[0];
           setSelectedDrone(firstActiveDevice.id);
           console.log('🎯 Auto-selected device:', firstActiveDevice.id);
         }

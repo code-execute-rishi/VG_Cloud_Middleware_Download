@@ -8,35 +8,37 @@ import { toast } from "sonner";
 import { VideoStreamModal } from '@/components/livekit/VideoStreamModal';
 
 const fleetStats = [
-  { 
+  {
     label: "Active Drones",
-    value: "4", 
-    change: "+1 today", 
-    badge: "Alpha, Bravo, Delta" 
+    value: "4",
+    change: "+1 today",
+    badge: "Alpha, Bravo, Delta"
   },
-  { 
+  {
     label: "Standby",
-    value: "1", 
-    change: "Charlie ready", 
-    badge: "Hangar 2" 
+    value: "1",
+    change: "Charlie ready",
+    badge: "Hangar 2"
   },
-  { 
+  {
     label: "In Maintenance",
-    value: "1", 
-    change: "Echo (battery)", 
-    badge: "ETA 4h" 
+    value: "1",
+    change: "Echo (battery)",
+    badge: "ETA 4h"
   },
-  { 
-    label: "Missions Today", 
-    value: "7", 
-    change: "+32% vs avg", 
-    badge: "3 BVLOS" 
+  {
+    label: "Missions Today",
+    value: "7",
+    change: "+32% vs avg",
+    badge: "3 BVLOS"
   },
 ];
 
 const statusColors = {
   Airborne: "text-green-600 bg-green-50",
+  "Airborne (Armed)": "text-green-600 bg-green-50",
   Standby: "text-amber-600 bg-amber-50",
+  Offline: "text-red-600 bg-red-50",
   Maintenance: "text-gray-500 bg-gray-100",
 };
 
@@ -59,7 +61,28 @@ const DashboardOverview = ({ user }) => {
       const response = await fetch('/api/devices');
       if (response.ok) {
         const data = await response.json();
-        setDevices(data || []);
+
+        // Transform data to calculate real-time status (matching FleetTab logic)
+        const transformedData = (data || []).map(device => {
+          let displayStatus = device.status || "Standby";
+
+          // Use real-time telemetry if available
+          if (device.flight_mode) {
+            displayStatus = device.flight_mode;
+            if (device.armed) {
+              // Use a simpler status for the small card, or keep full detail
+              // "Airborne (Armed)" might be too long for the badge, but consistency is key.
+              displayStatus += " (Armed)";
+            }
+          }
+
+          return {
+            ...device,
+            status: displayStatus
+          };
+        });
+
+        setDevices(transformedData);
       }
     } catch (error) {
       console.error('Error fetching devices:', error);
