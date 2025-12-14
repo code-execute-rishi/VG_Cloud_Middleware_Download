@@ -4,6 +4,7 @@ import (
 	"backend/models"
 	"database/sql"
 	"errors"
+	"time"
 )
 
 func GetOrCreateUser(db *sql.DB, clerkUserID, email string) (string, error) {
@@ -42,7 +43,7 @@ func GetUserDevices(db *sql.DB, userID string) ([]models.Device, error) {
         SELECT 
             d.id, d.name, d.status, d.last_seen,
             dt.latitude, dt.longitude, dt.altitude, dt.speed, 
-            dt.heading, dt.signal_strength, dt.battery
+            dt.heading, dt.signal_strength, dt.battery, dt.armed, dt.flight_mode
         FROM devices d
         LEFT JOIN device_telemetry dt ON d.id = dt.device_id
         WHERE d.owner_id = $1
@@ -60,10 +61,13 @@ func GetUserDevices(db *sql.DB, userID string) ([]models.Device, error) {
 		var d models.Device
 		var lat, lng, alt, spd, hdg sql.NullFloat64
 		var sig, bat sql.NullInt64
+		var armed sql.NullBool
+		var flightMode sql.NullString
 
 		err := rows.Scan(
 			&d.ID, &d.Name, &d.Status, &d.LastSeen,
 			&lat, &lng, &alt, &spd, &hdg, &sig, &bat,
+			&armed, &flightMode,
 		)
 		if err != nil {
 			return nil, err
@@ -92,6 +96,27 @@ func GetUserDevices(db *sql.DB, userID string) ([]models.Device, error) {
 		if bat.Valid {
 			batInt := int(bat.Int64)
 			d.Battery = &batInt
+		}
+		if armed.Valid {
+			d.Armed = &armed.Bool
+		}
+		if flightMode.Valid {
+			d.FlightMode = &flightMode.String
+		}
+
+		// Liveness Check: If last seen > 1 minute ago, force status to "Offline"
+		if d.LastSeen != nil {
+			if time.Since(*d.LastSeen) > 1*time.Minute {
+				offline := "Offline"
+				d.Status = offline // Use Status field or FlightMode field?
+				// The frontend uses flight_mode override if present.
+				// So we should set flight_mode to "Offline" too if we want to be sure.
+				d.FlightMode = &offline
+
+				// Also disarm
+				disarmed := false
+				d.Armed = &disarmed
+			}
 		}
 
 		devices = append(devices, d)

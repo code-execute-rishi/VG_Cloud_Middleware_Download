@@ -25,6 +25,8 @@ type Device struct {
 	Heading        *float64       `json:"heading"`
 	SignalStrength *int           `json:"signal_strength"`
 	Battery        *int           `json:"battery"`
+	Armed          *bool          `json:"armed"`
+	FlightMode     *string        `json:"flight_mode"`
 	Collaborators  []Collaborator `json:"collaborators"`
 }
 
@@ -40,6 +42,7 @@ type DeviceDetail struct {
 	Heading        *float64       `json:"heading"`
 	SignalStrength *int           `json:"signal_strength"`
 	Battery        *int           `json:"battery"`
+	Armed          *bool          `json:"armed"`
+	FlightMode     *string        `json:"flight_mode"`
 	Collaborators  []Collaborator `json:"collaborators"`
 }
-

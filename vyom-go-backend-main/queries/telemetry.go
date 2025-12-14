@@ -108,5 +108,11 @@ func UpdateDeviceTelemetry(db *sql.DB, update models.TelemetryUpdate) error {
 	)
 
 	_, err := db.Exec(query, args...)
+	if err != nil {
+		return err
+	}
+
+	// Also update devices table last_seen to verify online status
+	_, err = db.Exec("UPDATE devices SET last_seen = NOW() WHERE id = $1", update.DeviceID)
 	return err
 }

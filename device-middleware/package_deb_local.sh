@@ -2,7 +2,7 @@
 set -e
 
 APP_NAME="vyom-middleware-local"
-VERSION="2.2.0"
+VERSION="2.3.0"
 ARCH="amd64"
 PKG_DIR="deb_package_local"
 
