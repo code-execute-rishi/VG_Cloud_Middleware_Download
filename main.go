@@ -455,7 +455,15 @@ func telemetryAndClaimLoop(ctx context.Context, room *lksdk.Room) {
 			cHdg := float32(telemHdg) / 100.0
 			cArmed := telemArmed
 			cMode := telemFlightMode
+			lastHb := telemLastHeartbeat
 			dataMutex.RUnlock()
+
+			// Check for stale heartbeat (timeout 5s)
+			if time.Now().Unix()-lastHb > 5 {
+				cArmed = false
+				cMode = "Offline"
+				// Optional: Reset other telemetry? Keep last known location for now.
+			}
 
 			update := TelemetryUpdate{
 				Latitude: cLat, Longitude: cLon, Altitude: cAlt,
@@ -624,7 +632,7 @@ func handleSystemInfo(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]interface{}{
 		"pairing_code": apiClient.Identity.PairingCode,
 		"device_id":    apiClient.Identity.NodeID,
-		"version":      "v2.0.1-patched",
+		"version":      "v2.3.0",
 	}
 	jsonResponse(w, resp)
 }
