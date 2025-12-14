@@ -131,7 +131,7 @@ export function VideoStreamModal({ droneId, droneName, isOpen, onClose }) {
         )}
       </div>
     </div>
-    </div >
+
   );
 }
 
