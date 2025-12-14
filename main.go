@@ -160,7 +160,16 @@ func startWebServer() {
 	mux.HandleFunc("/api/save-config", handleSaveConfig)
 	mux.HandleFunc("/api/stream", handleLocalStream)
 
-	fs := http.FileServer(http.Dir("./ui/dist"))
+	// Determine UI Directory
+	uiDir := "./ui/dist"
+	if _, err := os.Stat(uiDir); os.IsNotExist(err) {
+		// Fallback to installed location (Debian Package)
+		if _, err := os.Stat("/opt/vyom/ui"); err == nil {
+			uiDir = "/opt/vyom/ui"
+		}
+	}
+	log.Printf("Serving UI from: %s", uiDir)
+	fs := http.FileServer(http.Dir(uiDir))
 	mux.Handle("/", fs)
 
 	if err := http.ListenAndServe(SetupPort, corsMiddleware(mux)); err != nil {
@@ -365,6 +374,8 @@ func telemetryAndClaimLoop(ctx context.Context, room *lksdk.Room) {
 		telemWpDist        uint16  = 0
 		telemWpSeq         uint16  = 0
 		telemLastHeartbeat int64   = 0
+		telemArmed         bool    = false
+		telemFlightMode    string  = "Unknown"
 	)
 
 	// 3. Start MAVLink Listener Routine
@@ -400,6 +411,18 @@ func telemetryAndClaimLoop(ctx context.Context, room *lksdk.Room) {
 						telemWpSeq = msg.Seq
 					case *common.MessageHeartbeat:
 						telemLastHeartbeat = time.Now().Unix()
+						// Check ARMED state (bit 7 of base_mode)
+						// MAV_MODE_FLAG_SAFETY_ARMED = 128
+						telemArmed = (msg.BaseMode & 128) != 0
+
+						// Simple Flight Mode Mapping (ArduCopter/PX4 approximate)
+						// This is a naive mapping. Real implementation requires dialect specific decoding.
+						// For now, we return "Ready" if disarmed, "Flying" if armed, etc.
+						if telemArmed {
+							telemFlightMode = "Airborne"
+						} else {
+							telemFlightMode = "Standby"
+						}
 					}
 					dataMutex.Unlock()
 				}
@@ -430,11 +453,14 @@ func telemetryAndClaimLoop(ctx context.Context, room *lksdk.Room) {
 			cAlt := float32(telemAlt) / 1000.0
 			cBatt := telemBatt
 			cHdg := float32(telemHdg) / 100.0
+			cArmed := telemArmed
+			cMode := telemFlightMode
 			dataMutex.RUnlock()
 
 			update := TelemetryUpdate{
 				Latitude: cLat, Longitude: cLon, Altitude: cAlt,
 				Speed: 0, Heading: cHdg, Battery: cBatt, SignalStrength: 100,
+				Armed: cArmed, FlightMode: cMode,
 			}
 			apiClient.UpdateTelemetry(update)
 
