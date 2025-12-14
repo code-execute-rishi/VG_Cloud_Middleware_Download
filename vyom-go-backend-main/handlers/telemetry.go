@@ -95,6 +95,8 @@ func UpdateTelemetry(w http.ResponseWriter, r *http.Request) {
 		Heading:        req.Heading,
 		SignalStrength: req.SignalStrength,
 		Battery:        req.Battery,
+		Armed:          req.Armed,
+		FlightMode:     req.FlightMode,
 	}
 
 	log.Println("🔵 UpdateTelemetry: Updating telemetry in database...")

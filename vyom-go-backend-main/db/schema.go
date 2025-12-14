@@ -71,6 +71,17 @@ func InitSchema() error {
 		return err
 	}
 
+	// Migration for new columns
+	migration := `
+    ALTER TABLE device_telemetry ADD COLUMN IF NOT EXISTS armed BOOLEAN;
+    ALTER TABLE device_telemetry ADD COLUMN IF NOT EXISTS flight_mode VARCHAR(50);
+    `
+	_, err = DB.Exec(migration)
+	if err != nil {
+		log.Printf("⚠️ Migration warning: %v", err)
+		// Don't fail hard on migration if it's just column exists issue, though IF NOT EXISTS handles it.
+	}
+
 	log.Println("✅ Schema initialized!")
 	return nil
 }

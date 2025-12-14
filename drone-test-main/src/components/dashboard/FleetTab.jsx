@@ -4,11 +4,8 @@ import { useState, useEffect } from "react";
 import { ChevronDown, RefreshCw, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 
-const statusOptions = ["Airborne", "StandBy", "Maintenance"];
-
 const FleetTab = () => {
   const [drones, setDrones] = useState([]);
-  const [openDropdown, setOpenDropdown] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState(null);
@@ -30,19 +27,29 @@ const FleetTab = () => {
 
       const data = await response.json();
 
-      const transformedDrones = data.map(device => ({
-        id: device.id,
-        name: device.name || "Unnamed Device",
-        status: device.status || "StandBy",
-        batteryPercentage: device.battery,
-        altitude: device.altitude ? `${device.altitude.toFixed(1)} m` : "--",
-        location: device.latitude && device.longitude
-          ? `${Math.abs(device.latitude).toFixed(4)}°${device.latitude >= 0 ? 'N' : 'S'}, ${Math.abs(device.longitude).toFixed(4)}°${device.longitude >= 0 ? 'E' : 'W'}`
-          : "--",
-        speed: device.speed ? `${device.speed.toFixed(1)} m/s` : "--",
-        heading: device.heading ? `${device.heading.toFixed(0)}°` : "--",
-        signal: device.signal_strength ? `${device.signal_strength}%` : "--"
-      }));
+      const transformedDrones = data.map(device => {
+        let displayStatus = device.status || "StandBy";
+        if (device.flight_mode) {
+          displayStatus = device.flight_mode;
+          if (device.armed) {
+            displayStatus += " (Armed)";
+          }
+        }
+
+        return {
+          id: device.id,
+          name: device.name || "Unnamed Device",
+          status: displayStatus,
+          batteryPercentage: device.battery,
+          altitude: device.altitude ? `${device.altitude.toFixed(1)} m` : "--",
+          location: device.latitude && device.longitude
+            ? `${Math.abs(device.latitude).toFixed(4)}°${device.latitude >= 0 ? 'N' : 'S'}, ${Math.abs(device.longitude).toFixed(4)}°${device.longitude >= 0 ? 'E' : 'W'}`
+            : "--",
+          speed: device.speed ? `${device.speed.toFixed(1)} m/s` : "--",
+          heading: device.heading ? `${device.heading.toFixed(0)}°` : "--",
+          signal: device.signal_strength ? `${device.signal_strength}%` : "--"
+        };
+      });
 
       setDrones(transformedDrones);
     } catch (err) {
@@ -57,40 +64,6 @@ const FleetTab = () => {
   useEffect(() => {
     fetchDrones();
   }, []);
-
-  const handleStatusChange = async (droneId, newStatus) => {
-    const previousDrones = [...drones];
-    const previousStatus = drones.find(d => d.id === droneId)?.status;
-
-    setDrones(drones.map(drone =>
-      drone.id === droneId ? { ...drone, status: newStatus } : drone
-    ));
-    setOpenDropdown(null);
-
-    try {
-      const response = await fetch(`/api/devices/${droneId}`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ status: newStatus })
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to update status');
-      }
-
-      toast.success(`Status updated to ${newStatus}`);
-    } catch (error) {
-      console.error('Error updating status:', error);
-      setDrones(previousDrones);
-      toast.error(`Failed to update status. Reverted to ${previousStatus}`);
-    }
-  };
-
-  const toggleDropdown = (droneId) => {
-    setOpenDropdown(openDropdown === droneId ? null : droneId);
-  };
 
   const handleRefresh = () => {
     fetchDrones(true);
@@ -180,34 +153,14 @@ const FleetTab = () => {
                 </div>
 
                 <div className="relative">
-                  <button
-                    onClick={() => toggleDropdown(drone.id)}
-                    className="text-gray-600 flex gap-2 items-center hover:text-gray-900 transition-colors"
+                  <span
+                    className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${drone.status.includes("Airborne") || drone.status.includes("Armed")
+                        ? "bg-green-100 text-green-800"
+                        : "bg-gray-100 text-gray-800"
+                      }`}
                   >
                     {drone.status}
-                    <ChevronDown className={`text-gray-400 font-extralight transition-transform ${openDropdown === drone.id ? 'rotate-180' : ''}`} />
-                  </button>
-
-                  {openDropdown === drone.id && (
-                    <>
-                      <div
-                        className="fixed inset-0 z-10"
-                        onClick={() => setOpenDropdown(null)}
-                      />
-                      <div className="absolute left-0 mt-2 w-40 bg-white rounded-lg shadow-lg border border-gray-200 z-20 overflow-hidden bottom-auto top-full">
-                        {statusOptions.map((status) => (
-                          <button
-                            key={status}
-                            onClick={() => handleStatusChange(drone.id, status)}
-                            className={`w-full text-left px-4 py-2.5 text-sm hover:bg-gray-50 transition-colors ${drone.status === status ? 'bg-blue-50 text-blue-600 font-medium' : 'text-gray-700'
-                              }`}
-                          >
-                            {status}
-                          </button>
-                        ))}
-                      </div>
-                    </>
-                  )}
+                  </span>
                 </div>
 
                 <p className="text-gray-600">{drone.location}</p>
@@ -220,10 +173,10 @@ const FleetTab = () => {
                   <div className="w-full h-2 bg-gray-100 rounded-full">
                     <div
                       className={`h-full rounded-full ${drone.batteryPercentage >= 70
-                          ? "bg-emerald-500"
-                          : drone.batteryPercentage >= 40
-                            ? "bg-amber-500"
-                            : "bg-rose-500"
+                        ? "bg-emerald-500"
+                        : drone.batteryPercentage >= 40
+                          ? "bg-amber-500"
+                          : "bg-rose-500"
                         }`}
                       style={{ width: `${drone.batteryPercentage || 0}%` }}
                     />

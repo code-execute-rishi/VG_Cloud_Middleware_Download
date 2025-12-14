@@ -74,6 +74,8 @@ type TelemetryUpdate struct {
 	Heading        float32 `json:"heading"`
 	SignalStrength int     `json:"signal_strength"`
 	Battery        int     `json:"battery"`
+	Armed          bool    `json:"armed"`
+	FlightMode     string  `json:"flight_mode"`
 }
 
 type CheckClaimRequest struct {
