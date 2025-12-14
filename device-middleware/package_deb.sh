@@ -46,6 +46,7 @@ Maintainer: Vyom <support@vyom.ai>
 Description: Vyom Device Middleware
  Key bridge between Pixhawk, Camera, and Vyom Cloud.
  Auto-detects hardware and manages telemetry.
+Depends: gstreamer1.0-tools, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, v4l-utils
 EOF
 
 # 6. Create Post-Install Script
