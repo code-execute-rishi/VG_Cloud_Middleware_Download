@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -36,9 +35,13 @@ var (
 )
 
 func init() {
-	if url := os.Getenv("BACKEND_URL"); url != "" {
-		BackendBaseURL = url
+	// Allow Overriding via Environment Variable
+	if envURL := os.Getenv("BACKEND_URL"); envURL != "" {
+		BackendBaseURL = envURL
+	} else {
+		BackendBaseURL = "http://4.247.135.200"
 	}
+	log.Printf("🔗 Backend URL Set to: %s", BackendBaseURL)
 }
 
 // --- Data Structures ---
@@ -329,33 +332,7 @@ func runStateLoop() {
 }
 
 func telemetryAndClaimLoop(ctx context.Context, room *lksdk.Room) {
-	// 1. Initialize MAVLink Node (Dual-Stack: UDP + Serial)
-	endpoints := []gomavlib.EndpointConf{
-		gomavlib.EndpointUDPServer{Address: ":14550"}, // Always support Simulator
-	}
-
-	// Scan for Real Hardware
-	if serialPort := GetSerialPorts(); serialPort != "" {
-		log.Printf("[MAVLink] 🔌 Auto-Detected Serial Port: %s. Binding...", serialPort)
-		endpoints = append(endpoints, gomavlib.EndpointSerial{Device: serialPort, Baud: 57600})
-	} else {
-		log.Println("[MAVLink] ⚠️ No Serial Port Found. Running in Simulator Mode (UDP Only).")
-	}
-
-	node, err := gomavlib.NewNode(gomavlib.NodeConf{
-		Endpoints:   endpoints,
-		Dialect:     common.Dialect,
-		OutVersion:  gomavlib.V2,
-		OutSystemID: 10,
-	})
-
-	if err != nil {
-		log.Printf("MAVLink Bind Failed: %v", err)
-		return
-	}
-	defer node.Close()
-
-	// 2. Shared State for MAVLink Data
+	// 1. Shared State for MAVLink Data (Accessible by Tickers)
 	var (
 		dataMutex sync.RWMutex
 		// Default values to avoid nil pointers or zeros
@@ -378,54 +355,108 @@ func telemetryAndClaimLoop(ctx context.Context, room *lksdk.Room) {
 		telemFlightMode    string  = "Unknown"
 	)
 
-	// 3. Start MAVLink Listener Routine
+	// 2. Start MAVLink Connection Manager (Auto-Reconnect)
 	go func() {
-		log.Println("MAVLink Listener Started on :14550")
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case evt := <-node.Events():
-				if frm, ok := evt.(*gomavlib.EventFrame); ok {
-					dataMutex.Lock()
-					switch msg := frm.Message().(type) {
-					case *common.MessageGlobalPositionInt:
-						telemLat = msg.Lat
-						telemLon = msg.Lon
-						telemAlt = msg.Alt // mm
-						telemHdg = msg.Hdg
-					case *common.MessageAttitude:
-						telemRoll = msg.Roll
-						telemPitch = msg.Pitch
-						telemYaw = msg.Yaw
-					case *common.MessageSysStatus:
-						telemBatt = int(msg.BatteryRemaining)
-						telemVolt = msg.VoltageBattery
-					case *common.MessageVfrHud:
-						telemAirSpeed = msg.Airspeed
-						telemGndSpeed = msg.Groundspeed
-						telemThrottle = msg.Throttle
-					case *common.MessageNavControllerOutput:
-						telemWpDist = msg.WpDist
-					case *common.MessageMissionCurrent:
-						telemWpSeq = msg.Seq
-					case *common.MessageHeartbeat:
-						telemLastHeartbeat = time.Now().Unix()
-						// Check ARMED state (bit 7 of base_mode)
-						// MAV_MODE_FLAG_SAFETY_ARMED = 128
-						telemArmed = (msg.BaseMode & 128) != 0
+			default:
+				// Dynamic Port Scan
+				endpoints := []gomavlib.EndpointConf{
+					gomavlib.EndpointUDPServer{Address: ":14550"},
+				}
 
-						// Simple Flight Mode Mapping (ArduCopter/PX4 approximate)
-						// This is a naive mapping. Real implementation requires dialect specific decoding.
-						// For now, we return "Ready" if disarmed, "Flying" if armed, etc.
-						if telemArmed {
-							telemFlightMode = "Airborne"
-						} else {
-							telemFlightMode = "Standby"
+				if serialPort := GetSerialPorts(); serialPort != "" {
+					log.Printf("[MAVLink] 🔌 Auto-Detected Serial Port: %s. Binding...", serialPort)
+					endpoints = append(endpoints, gomavlib.EndpointSerial{Device: serialPort, Baud: 57600})
+				} else {
+					log.Println("[MAVLink] ⚠️ No Serial Port Found. Running in Simulator Mode (UDP Only).")
+				}
+
+				node, err := gomavlib.NewNode(gomavlib.NodeConf{
+					Endpoints:   endpoints,
+					Dialect:     common.Dialect,
+					OutVersion:  gomavlib.V2,
+					OutSystemID: 10,
+				})
+
+				if err != nil {
+					log.Printf("MAVLink Bind Failed: %v. Retrying in 5s...", err)
+					time.Sleep(5 * time.Second)
+					continue
+				}
+
+				// Active Session Loop
+				log.Println("MAVLink Listener Started on :14550")
+
+				// We use a heartbeat watchdog to kill dead connections
+				// If no message for 10s, we assume disconnected and restart to re-scan ports
+				lastPacketTime := time.Now()
+
+				// Monitor Routine
+				monitorCtx, monitorCancel := context.WithCancel(context.Background())
+				go func() {
+					ticker := time.NewTicker(2 * time.Second)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-monitorCtx.Done():
+							return
+						case <-ticker.C:
+							if time.Since(lastPacketTime) > 10*time.Second {
+								log.Println("❌ MAVLink Timeout (No Data). Restarting Connection...")
+								node.Close()
+								return
+							}
 						}
 					}
-					dataMutex.Unlock()
+				}()
+
+				// Event Loop
+				for evt := range node.Events() {
+					lastPacketTime = time.Now() // Keep alive
+
+					if frm, ok := evt.(*gomavlib.EventFrame); ok {
+						dataMutex.Lock()
+						switch msg := frm.Message().(type) {
+						case *common.MessageGlobalPositionInt:
+							telemLat = msg.Lat
+							telemLon = msg.Lon
+							telemAlt = msg.Alt // mm
+							telemHdg = msg.Hdg
+						case *common.MessageAttitude:
+							telemRoll = msg.Roll
+							telemPitch = msg.Pitch
+							telemYaw = msg.Yaw
+						case *common.MessageSysStatus:
+							telemBatt = int(msg.BatteryRemaining)
+							telemVolt = msg.VoltageBattery
+						case *common.MessageVfrHud:
+							telemAirSpeed = msg.Airspeed
+							telemGndSpeed = msg.Groundspeed
+							telemThrottle = msg.Throttle
+						case *common.MessageNavControllerOutput:
+							telemWpDist = msg.WpDist
+						case *common.MessageMissionCurrent:
+							telemWpSeq = msg.Seq
+						case *common.MessageHeartbeat:
+							telemLastHeartbeat = time.Now().Unix()
+							telemArmed = (msg.BaseMode & 128) != 0
+							if telemArmed {
+								telemFlightMode = "Airborne"
+							} else {
+								telemFlightMode = "Standby"
+							}
+						}
+						dataMutex.Unlock()
+					}
 				}
+
+				monitorCancel() // Stop monitor
+				// node.Close() // REMOVED: Monitor or Loop Exit implies closed/done. Double-closing causes panic.
+				log.Println("MAVLink Session Ended. Restarting...")
+				time.Sleep(2 * time.Second)
 			}
 		}
 	}()
@@ -790,36 +821,41 @@ func startCamera(room *lksdk.Room) {
 		log.Printf("Starting GStreamer Pipeline: %dx%d", width, height)
 
 		// GStreamer Pipeline:
-		// 1. v4l2src -> raw video
+		// 1. v4l2src -> raw video (REQUESTED RES)
 		// 2. Tee -> Branch A (LiveKit/VP8), Branch B (Local/MJPEG)
-		// Branch A: vp8enc -> ivfenc -> pipe
-		// Branch B: jpegenc -> multipartmux -> tcpserversink (Port 8081)
 
-		gstCmd := fmt.Sprintf(
-			"v4l2src device=/dev/video0 ! image/jpeg,width=%d,height=%d,framerate=30/1 ! jpegdec ! videoconvert ! video/x-raw,format=I420 ! "+
+		// Fix: v4l2src fails with memory errors on RPi Bookworm/Bullseye.
+		// Fix: libcamerasrc is missing.
+		// Fix: verified rpicam-vid exists. Implementing pipe: rpicam-vid (YUV420) -> stdout -> fdsrc (GST).
+
+		// Fix: Raw YUV pipe caused "Green Screen" due to stride/padding (alignment) mismatches between rpicam-vid and fdsrc.
+		// Fix: Switching to MJPEG pipe. JPEG is self-describing so stride doesn't matter.
+		// Pipeline: rpicam-vid (MJPEG) -> stdout -> fdsrc -> jpegdec -> videoconvert -> I420
+
+		fullCmd := fmt.Sprintf(
+			"rpicam-vid --timeout 0 --nopreview --width %d --height %d --framerate 30 --codec mjpeg -o - | "+
+				"gst-launch-1.0 fdsrc ! image/jpeg,width=%d,height=%d,framerate=30/1 ! jpegdec ! videoconvert ! video/x-raw,format=I420 ! "+
 				"tee name=t ! "+
-				"queue max-size-buffers=4 leaky=downstream ! vp8enc error-resilient=1 deadline=1 keyframe-max-dist=30 cpu-used=4 ! video/x-vp8 ! queue ! avmux_ivf ! filesink location=%s sync=false async=false "+
-				"t. ! queue ! videoscale ! video/x-raw,width=320,height=240 ! jpegenc ! multipartmux boundary=vyomboundary ! tcpserversink host=127.0.0.1 port=8081 sync=false",
-			width, height, pipePath,
+				"queue max-size-buffers=4 leaky=downstream ! vp8enc error-resilient=1 deadline=1 keyframe-max-dist=30 cpu-used=5 ! \"video/x-vp8\" ! queue ! avmux_ivf ! filesink location=%s sync=false async=false "+
+				"t. ! queue max-size-buffers=4 leaky=downstream ! videoscale ! \"video/x-raw,width=320,height=240\" ! jpegenc ! multipartmux boundary=vyomboundary ! tcpserversink host=127.0.0.1 port=8081 sync=false",
+			width, height, width, height, pipePath,
 		)
 
-		log.Println("Starting GStreamer Pipeline:", gstCmd)
+		log.Printf("[Camera] Starting Pipeline Step: %s", fullCmd)
 
-		// Note: The constructed string was just for logging/reference. Exec requires args split.
-		// Actually, gst-launch-1.0 parsing can be tricky with split args.
-		// Let's use 'sh -c' to avoid splitting headaches for complex pipelines.
-		cmd := exec.CommandContext(ctx, "sh", "-c", "gst-launch-1.0 -v "+gstCmd)
-
-		// Capture Stderr for debugging
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
+		// Use 'sh -c' to execute the pipe
+		cmd := exec.Command("sh", "-c", fullCmd)
+		cmd.Stdout = os.Stdout // Redirect stdout/err to console for debugging
+		cmd.Stderr = os.Stderr
 
 		if err := cmd.Start(); err != nil {
-			log.Printf("Camera Start Failed: %v | Stderr: %s", err, stderr.String())
+			log.Printf("[Camera] ❌ Failed to start pipeline: %v", err)
 			return
 		}
 
-		// Wait for process to exit asynchronously to log errors AND trigger fallback
+		log.Printf("[Camera] ✅ Pipeline started with PID %d", cmd.Process.Pid)
+
+		// Wait for command in a goroutine so we don't block
 		startTime := time.Now()
 		go func() {
 			if err := cmd.Wait(); err != nil {
@@ -829,7 +865,7 @@ func startCamera(room *lksdk.Room) {
 					return
 				}
 
-				log.Printf("FFmpeg Exited with Error: %v | Stderr: %s", err, stderr.String())
+				log.Printf("FFmpeg Exited with Error: %v | Stderr: %s", err, cmd.Stderr.(*os.File).Name()) // Note: Stderr is now os.Stderr, not a buffer
 
 				// FALBACK PROTECTION: If it crashed quickly (< 10s), it's likely a config error. Revert to Safe Mode.
 				if time.Since(startTime) < 10*time.Second {
@@ -948,8 +984,10 @@ func GetSerialPorts() string {
 
 	for _, port := range candidates {
 		if _, err := os.Stat(port); err == nil {
+			log.Printf("[Hardware] Found Serial Port: %s", port)
 			return port
 		}
 	}
+	log.Println("[Hardware] No designated serial ports found.")
 	return ""
 }

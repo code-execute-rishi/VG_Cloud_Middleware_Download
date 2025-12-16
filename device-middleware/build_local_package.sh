@@ -3,10 +3,10 @@ set -e
 
 APP_NAME="vyom-middleware"
 VERSION="2.4.8"
-ARCH="arm64"
-PKG_DIR="deb_package"
+ARCH="amd64" # CHANGED FOR LOCAL TEST
+PKG_DIR="deb_package_local"
 
-echo "📦 Starting Debian Package Build for $APP_NAME v$VERSION ($ARCH)..."
+echo "📦 Starting LOCAL Debian Package Build for $APP_NAME v$VERSION ($ARCH)..."
 
 # 1. Clean & Prepare Directories
 echo "🧹 Cleaning up..."
@@ -17,9 +17,9 @@ mkdir -p $PKG_DIR/opt/vyom/ui
 mkdir -p $PKG_DIR/DEBIAN
 
 # 2. Build Middleware (Go)
-echo "🔨 Building Middleware Binary (ARM64)..."
+echo "🔨 Building Middleware Binary (AMD64)..."
 export GOOS=linux
-export GOARCH=arm64
+export GOARCH=amd64
 go build -o $PKG_DIR/usr/local/bin/$APP_NAME .
 
 # 3. Build UI (React)
@@ -43,7 +43,7 @@ Section: utils
 Priority: optional
 Architecture: $ARCH
 Maintainer: Vyom <support@vyom.ai>
-Description: Vyom Device Middleware
+Description: Vyom Device Middleware (Local Test)
  Key bridge between Pixhawk, Camera, and Vyom Cloud.
  Auto-detects hardware and manages telemetry.
 Depends: gstreamer1.0-tools, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, v4l-utils
