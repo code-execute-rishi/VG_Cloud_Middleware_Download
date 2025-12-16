@@ -287,6 +287,7 @@ func (c *BackendClient) post(path string, payload interface{}, target interface{
 		// Universal Check for Identity Reset (400/401/404 on Auth/Check-Claim)
 		if resp.StatusCode == 400 || resp.StatusCode == 404 || resp.StatusCode == 401 {
 			bodyStr := string(respBody)
+			log.Printf("API Error Body (%d): %s", resp.StatusCode, bodyStr) // Added Logging
 			if bytes.Contains(respBody, []byte("No devices found")) ||
 				bytes.Contains(respBody, []byte("Device with this deviceID doesn't exist")) ||
 				strings.Contains(bodyStr, "not found") { // Covers generic 404
