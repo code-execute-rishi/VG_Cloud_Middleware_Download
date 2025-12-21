@@ -87,6 +87,30 @@ type CheckClaimResponse struct {
 	Message string `json:"message"`
 }
 
+// --- V2 Auth Models ---
+
+type DeviceCodeRequestV2 struct {
+	ClientID  string `json:"client_id"`
+	PublicKey string `json:"public_key"`
+}
+
+type DeviceCodeResponse struct {
+	DeviceCode              string `json:"device_code"`
+	UserCode                string `json:"user_code"`
+	VerificationURI         string `json:"verification_uri"`
+	VerificationURIComplete string `json:"verification_uri_complete"`
+	ExpiresIn               int    `json:"expires_in"`
+	Interval                int    `json:"interval"`
+}
+
+type PollRequest struct {
+	DeviceCode string `json:"device_code"`
+}
+
+type PollResponse struct {
+	DeviceID string `json:"device_id"`
+}
+
 // --- Backend Client ---
 
 type BackendClient struct {
@@ -261,6 +285,46 @@ func (c *BackendClient) CheckLiveness() error {
 
 	log.Printf("[Liveness] Probe Success (Device Exists)")
 	return nil
+}
+
+// --- V2 Auth Methods ---
+
+func (c *BackendClient) RequestDeviceCode() (*DeviceCodeResponse, error) {
+	req := DeviceCodeRequestV2{
+		ClientID:  "middleware",
+		PublicKey: c.Identity.PublicKey,
+	}
+
+	var res DeviceCodeResponse
+	if err := c.post("/api/v2/auth/device/code", req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *BackendClient) PollForToken(deviceCode string) (*PollResponse, error) {
+	req := PollRequest{DeviceCode: deviceCode}
+	var res PollResponse
+
+	err := c.post("/api/v2/auth/device/poll", req, &res)
+	if err == nil {
+		return &res, nil
+	}
+
+	// Helper handles API errors by returning a formatted error string.
+	// We check for specific substrings.
+	errStr := err.Error()
+	if strings.Contains(errStr, "428") {
+		return nil, fmt.Errorf("authorization_pending")
+	}
+	if strings.Contains(errStr, "410") {
+		return nil, fmt.Errorf("expired_token")
+	}
+	if strings.Contains(errStr, "403") {
+		return nil, fmt.Errorf("access_denied")
+	}
+
+	return nil, err
 }
 
 // --- Helper ---

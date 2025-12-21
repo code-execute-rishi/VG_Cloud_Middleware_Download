@@ -79,6 +79,12 @@ type ZeroTierStatus struct {
 	LastError string          `json:"last_error"`
 }
 
+type AuthStatus struct {
+	UserCode        string `json:"user_code"`
+	VerificationURI string `json:"verification_uri"`
+	Expiry          int    `json:"expiry"`
+}
+
 type GlobalDeviceStatus struct {
 	IsConfigured bool           `json:"is_configured"`
 	IsConnected  bool           `json:"is_connected"` // Cloud/LiveKit Connected
@@ -87,6 +93,7 @@ type GlobalDeviceStatus struct {
 	Hardware     HardwareStatus `json:"hardware_status"`
 	LiveKit      LiveKitStatus  `json:"livekit_status"`
 	ZeroTier     ZeroTierStatus `json:"zerotier_status"`
+	Auth         AuthStatus     `json:"auth_status"`
 }
 
 type HardwareStatus struct {
@@ -150,6 +157,11 @@ var (
 	activeRoomMutex sync.Mutex
 
 	apiClient *BackendClient
+
+	// V2 Setup Logic State
+	setupUserCode        string
+	setupDeviceCode      string
+	setupVerificationURI string
 )
 
 // --- MAIN ENTRY POINT ---
@@ -269,10 +281,68 @@ func handleLocalStream(w http.ResponseWriter, r *http.Request) {
 func runStateLoop() {
 	for {
 		// Load Config
+		// Load Config
 		if _, err := os.Stat(ConfigFileName); os.IsNotExist(err) {
 			setStatus(false, false, false)
-			log.Println("[Loop] No Config. Waiting in Setup Mode...")
-			time.Sleep(2 * time.Second)
+
+			// --- V2 DEVICE FLOW LOGIC ---
+			if setupUserCode == "" {
+				log.Println("[Setup] Requesting Device Code...")
+				resp, err := apiClient.RequestDeviceCode()
+				if err != nil {
+					log.Printf("[Setup] Failed to get code: %v", err)
+					time.Sleep(5 * time.Second)
+					continue
+				}
+				setupUserCode = resp.UserCode
+				setupDeviceCode = resp.DeviceCode
+				setupVerificationURI = resp.VerificationURIComplete
+
+				deviceStatusMutex.Lock()
+				deviceStatus.Auth.UserCode = setupUserCode
+				deviceStatus.Auth.VerificationURI = setupVerificationURI
+				deviceStatus.Auth.Expiry = resp.ExpiresIn
+				deviceStatusMutex.Unlock()
+
+				log.Printf("[Setup] Code Recv: %s. Waiting for User...", setupUserCode)
+			} else {
+				// Poll
+				log.Println("[Setup] Polling for Authorization...")
+				resp, err := apiClient.PollForToken(setupDeviceCode)
+				if err == nil {
+					log.Println("✅ [Setup] DEVICE AUTHORIZED! Saving Identity...")
+
+					// Update Identity
+					apiClient.Identity.DeviceID = resp.DeviceID
+					if err := apiClient.TypifySaveIdentity(); err != nil {
+						log.Printf("Failed to save identity: %v", err)
+					}
+
+					// Clear Setup State
+					setupUserCode = ""
+					setupDeviceCode = ""
+
+					// Write Default Config to Exit Setup Mode
+					config := ConfigFile{
+						Resolution: "640x480",
+						SSID:       "ETHERNET_DEFAULT", // Or keep empty
+					}
+					data, _ := json.MarshalIndent(config, "", "  ")
+					os.WriteFile(ConfigFileName, data, 0644)
+
+					log.Println("✅ [Setup] Config Created. Rebooting Loop into Mission Mode.")
+					continue
+				} else {
+					if err.Error() == "expired_token" || err.Error() == "access_denied" {
+						log.Println("[Setup] Token Expired/Denied. Refreshing Code...")
+						setupUserCode = "" // Force Request New Code
+					}
+					// If "authorization_pending", we just wait.
+				}
+			}
+
+			// log.Println("[Loop] No Config. Waiting in Setup Mode...")
+			time.Sleep(5 * time.Second)
 			continue
 		}
 
@@ -311,13 +381,21 @@ func runStateLoop() {
 
 			if strings.Contains(err.Error(), "DEVICE_FORGOTTEN") {
 				log.Println("⚠️ DEVICE FORGOTTEN BY CLOUD. RESETTING IDENTITY... ⚠️")
+
+				// Graceful Camera Shutdown
+				cameraMutex.Lock()
+				if cameraCancel != nil {
+					cameraCancel()
+				}
+				cameraMutex.Unlock()
+
+				time.Sleep(2 * time.Second) // Allow GStreamer to handle signal
+
 				if resetErr := apiClient.ResetIdentity(); resetErr != nil {
 					log.Printf("[Loop] Reset Identity Failed: %v", resetErr)
 				}
-				// Clear Status to force Setup UI
-				setStatus(false, false, false)
-				time.Sleep(2 * time.Second)
-				continue
+				os.Remove(ConfigFileName) // Ensure config is wiped to force Setup Mode
+				os.Exit(0)                // Restart process
 			}
 			log.Printf("[Loop] Auth Failed: %v", err)
 			time.Sleep(5 * time.Second)
@@ -709,9 +787,20 @@ func telemetryAndClaimLoop(ctx context.Context, room *lksdk.Room) {
 			if err != nil {
 				if strings.Contains(err.Error(), "DEVICE_FORGOTTEN") {
 					log.Println(">>> DEVICE FORGOTTEN (Hard Reset) <<<")
-					log.Println("Wiping Identity and Restarting...")
+					log.Println("Stopping Camera and Wiping Identity...")
+
+					// Graceful Camera Shutdown
+					cameraMutex.Lock()
+					if cameraCancel != nil {
+						cameraCancel()
+					}
+					cameraMutex.Unlock()
+
+					time.Sleep(2 * time.Second) // Allow GStreamer to handle signal
+
 					apiClient.ResetIdentity()
-					os.Exit(0) // Supervisor will restart with new identity
+					os.Remove(ConfigFileName) // Ensure config is wiped to force Setup Mode
+					os.Exit(0)                // Supervisor will restart with new identity
 				}
 
 				log.Printf("[Loop] CheckClaim Error: %v", err)
@@ -754,7 +843,18 @@ func telemetryAndClaimLoop(ctx context.Context, room *lksdk.Room) {
 				if err := apiClient.CheckLiveness(); err != nil {
 					if strings.Contains(err.Error(), "DEVICE_FORGOTTEN") {
 						log.Println(">>> DEVICE FORGOTTEN (Hard Reset Confirmed) <<<")
+
+						// Graceful Camera Shutdown
+						cameraMutex.Lock()
+						if cameraCancel != nil {
+							cameraCancel()
+						}
+						cameraMutex.Unlock()
+
+						time.Sleep(2 * time.Second) // Allow GStreamer to handle signal
+
 						apiClient.ResetIdentity()
+						os.Remove(ConfigFileName) // Ensure config is wiped to force Setup Mode
 						os.Exit(0)
 					}
 				}
@@ -1011,7 +1111,8 @@ func startCamera(room *lksdk.Room) {
 
 		// Use 'sh -c' to execute the pipe
 		cmd := exec.Command("sh", "-c", fullCmd)
-		cmd.Stdout = os.Stdout // Redirect stdout/err to console for debugging
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // Create new process group
+		cmd.Stdout = os.Stdout                                // Redirect stdout/err to console for debugging
 		cmd.Stderr = os.Stderr
 
 		if err := cmd.Start(); err != nil {
@@ -1020,6 +1121,16 @@ func startCamera(room *lksdk.Room) {
 		}
 
 		log.Printf("[Camera] ✅ Pipeline started with PID %d", cmd.Process.Pid)
+
+		// Monitor Context to Kill Process Group
+		go func() {
+			<-ctx.Done()
+			log.Println("[Camera] Context Cancelled. Killing GStreamer Process Group...")
+			if cmd.Process != nil {
+				// Kill the entire process group (-pid)
+				syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			}
+		}()
 
 		// Wait for command in a goroutine so we don't block
 		startTime := time.Now()
@@ -1030,8 +1141,9 @@ func startCamera(room *lksdk.Room) {
 					log.Println("Camera stopped intentionally (Context Cancelled).")
 					return
 				}
-
-				log.Printf("FFmpeg Exited with Error: %v | Stderr: %s", err, cmd.Stderr.(*os.File).Name()) // Note: Stderr is now os.Stderr, not a buffer
+				// Log real errors
+				// Note: cmd.Stderr is os.Stderr, so we can't read it here easily. Just log error.
+				log.Printf("FFmpeg/GStreamer Exited with Error: %v", err)
 
 				// FALBACK PROTECTION: If it crashed quickly (< 10s), it's likely a config error. Revert to Safe Mode.
 				if time.Since(startTime) < 10*time.Second {
