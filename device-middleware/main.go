@@ -56,20 +56,42 @@ type ConfigFile struct {
 	FCBaud     int    `json:"fc_baud"`
 }
 
+// ConnectionState Enum
+type ConnectionState string
+
+const (
+	StateConnected    ConnectionState = "Connected"
+	StateDisconnected ConnectionState = "Disconnected"
+	StateError        ConnectionState = "Error"
+)
+
+type LiveKitStatus struct {
+	State        ConnectionState `json:"state"`
+	RoomName     string          `json:"room_name"`
+	Participants int             `json:"participants"`
+	LastError    string          `json:"last_error"`
+}
+
+type ZeroTierStatus struct {
+	State     ConnectionState `json:"state"`
+	NetworkID string          `json:"network_id"`
+	IPAddress string          `json:"ip_address"`
+	LastError string          `json:"last_error"`
+}
+
 type GlobalDeviceStatus struct {
 	IsConfigured bool           `json:"is_configured"`
 	IsConnected  bool           `json:"is_connected"` // Cloud/LiveKit Connected
 	IsClaimed    bool           `json:"is_claimed"`
 	Camera       CameraConfig   `json:"camera_config"`
 	Hardware     HardwareStatus `json:"hardware_status"`
+	LiveKit      LiveKitStatus  `json:"livekit_status"`
+	ZeroTier     ZeroTierStatus `json:"zerotier_status"`
 }
 
 type HardwareStatus struct {
-	FCConnected  bool   `json:"fc_connected"`
-	CamConnected bool   `json:"cam_connected"`
-	FCFirmware   string `json:"fc_firmware,omitempty"`
-	FCType       string `json:"fc_type,omitempty"`
-	CurrentPort  string `json:"current_port,omitempty"`
+	FCConnected  bool `json:"fc_connected"`
+	CamConnected bool `json:"cam_connected"`
 }
 
 type CameraConfig struct {
@@ -270,6 +292,10 @@ func runStateLoop() {
 		// 1. Ensure Registered
 		if err := apiClient.Register(); err != nil {
 			log.Printf("[Loop] Registration Retry Failed: %v", err)
+			deviceStatusMutex.Lock()
+			deviceStatus.LiveKit.State = StateError
+			deviceStatus.LiveKit.LastError = "Registration Failed"
+			deviceStatusMutex.Unlock()
 			time.Sleep(5 * time.Second)
 			continue
 		}
@@ -278,6 +304,11 @@ func runStateLoop() {
 		log.Println("[Loop] Authenticating...")
 		authRes, err := apiClient.Authenticate()
 		if err != nil {
+			deviceStatusMutex.Lock()
+			deviceStatus.LiveKit.State = StateError
+			deviceStatus.LiveKit.LastError = "Auth Failed"
+			deviceStatusMutex.Unlock()
+
 			if strings.Contains(err.Error(), "DEVICE_FORGOTTEN") {
 				log.Println("⚠️ DEVICE FORGOTTEN BY CLOUD. RESETTING IDENTITY... ⚠️")
 				if resetErr := apiClient.ResetIdentity(); resetErr != nil {
@@ -306,13 +337,34 @@ func runStateLoop() {
 		cb := lksdk.NewRoomCallback()
 		cb.OnDisconnected = func() {
 			log.Println("[Callback] Room Disconnected. Cancelling loop context.")
+			deviceStatusMutex.Lock()
+			deviceStatus.LiveKit.State = StateDisconnected
+			deviceStatusMutex.Unlock()
 			cancel()
+		}
+
+		// Track Participants
+		cb.OnParticipantConnected = func(p *lksdk.RemoteParticipant) {
+			deviceStatusMutex.Lock()
+			deviceStatus.LiveKit.Participants++
+			deviceStatusMutex.Unlock()
+		}
+		cb.OnParticipantDisconnected = func(p *lksdk.RemoteParticipant) {
+			deviceStatusMutex.Lock()
+			if deviceStatus.LiveKit.Participants > 0 {
+				deviceStatus.LiveKit.Participants--
+			}
+			deviceStatusMutex.Unlock()
 		}
 
 		log.Printf("[Loop] Connecting to Room: %s", authRes.RoomName)
 		room, err := lksdk.ConnectToRoomWithToken(authRes.LiveKitURL, authRes.LiveKitToken, cb)
 		if err != nil {
 			log.Printf("[Loop] LiveKit Connect Failed: %v", err)
+			deviceStatusMutex.Lock()
+			deviceStatus.LiveKit.State = StateError
+			deviceStatus.LiveKit.LastError = "Connection Failed"
+			deviceStatusMutex.Unlock()
 			cancel() // Clean up context
 			time.Sleep(5 * time.Second)
 			continue
@@ -325,6 +377,14 @@ func runStateLoop() {
 
 		log.Println("[Loop] Connected! Joining Mission.")
 		setStatus(true, true, isClaimed) // Updated with actual claim status
+
+		// Update Detailed LiveKit Status
+		deviceStatusMutex.Lock()
+		deviceStatus.LiveKit.State = StateConnected
+		deviceStatus.LiveKit.RoomName = room.Name()
+		deviceStatus.LiveKit.Participants = len(room.GetRemoteParticipants())
+		deviceStatus.LiveKit.LastError = ""
+		deviceStatusMutex.Unlock()
 
 		// 4. Start Subsystems
 		startCamera(room)
@@ -387,10 +447,6 @@ func telemetryAndClaimLoop(ctx context.Context, room *lksdk.Room) {
 				if serialPort := GetSerialPorts(); serialPort != "" {
 					log.Printf("[MAVLink] 🔌 Auto-Detected Serial Port: %s. Binding...", serialPort)
 					endpoints = append(endpoints, gomavlib.EndpointSerial{Device: serialPort, Baud: 57600})
-
-					deviceStatusMutex.Lock()
-					deviceStatus.Hardware.CurrentPort = serialPort
-					deviceStatusMutex.Unlock()
 				} else {
 					log.Println("[MAVLink] ⚠️ No Serial Port Found. Running in Simulator Mode (UDP Only).")
 				}
@@ -469,14 +525,6 @@ func telemetryAndClaimLoop(ctx context.Context, room *lksdk.Room) {
 							} else {
 								telemFlightMode = "Standby"
 							}
-
-							// Update Global Hardware Status (Thread-Safe)
-							deviceStatusMutex.Lock()
-							deviceStatus.Hardware.FCConnected = true
-							deviceStatus.Hardware.FCType = fmt.Sprintf("MAV_TYPE_%d", msg.Type)
-							deviceStatus.Hardware.FCFirmware = fmt.Sprintf("AUTOPILOT_%d", msg.Autopilot)
-							// CurrentPort is set during connection establishment
-							deviceStatusMutex.Unlock()
 						}
 						dataMutex.Unlock()
 					}
@@ -517,6 +565,36 @@ func telemetryAndClaimLoop(ctx context.Context, room *lksdk.Room) {
 			cMode := telemFlightMode
 			lastHb := telemLastHeartbeat
 			dataMutex.RUnlock()
+
+			// --- ZeroTier Status Check ---
+			var ztState = StateDisconnected
+			var ztIP = ""
+
+			if ifaces, err := net.Interfaces(); err == nil {
+				for _, i := range ifaces {
+					if strings.HasPrefix(i.Name, "zt") {
+						addrs, _ := i.Addrs()
+						for _, addr := range addrs {
+							if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {
+								ztIP = ipnet.IP.String()
+								ztState = StateConnected
+								break
+							}
+						}
+					}
+				}
+			}
+
+			deviceStatusMutex.Lock()
+			deviceStatus.ZeroTier.State = ztState
+			deviceStatus.ZeroTier.IPAddress = ztIP
+			if ztState == StateDisconnected {
+				// Only set error if we expect it to be there but it's not (simplified for now)
+				deviceStatus.ZeroTier.LastError = "No Interface"
+			} else {
+				deviceStatus.ZeroTier.LastError = ""
+			}
+			deviceStatusMutex.Unlock()
 
 			// Check for stale heartbeat (timeout 5s)
 			if time.Now().Unix()-lastHb > 5 {
@@ -720,6 +798,7 @@ func handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 
 	log.Println("Registering Device via Web UI...")
 	if err := apiClient.Register(); err != nil {
+		log.Printf("[API ERROR] Register Failed: %v", err)
 		http.Error(w, fmt.Sprintf("Register Failed: %v", err), 500)
 		return
 	}
@@ -821,6 +900,11 @@ func setStatus(conf, conn, claimed bool) {
 	deviceStatus.IsConfigured = conf
 	deviceStatus.IsConnected = conn
 	deviceStatus.IsClaimed = claimed
+
+	// Update Legacy/Fallback State if disconnected
+	if !conn {
+		deviceStatus.LiveKit.State = StateDisconnected
+	}
 }
 
 func getOutboundIP() string {
