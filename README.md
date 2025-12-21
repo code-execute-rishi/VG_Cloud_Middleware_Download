@@ -11,13 +11,14 @@
 
 - **Real-time Telemetry**: Live monitoring of Attitude (Roll, Pitch, Yaw), GPS Position, Battery Status, and Flight Modes.
 - **Low-Latency Video**: Integrated WebRTC video feed using **LiveKit** for real-time situational awareness.
+- **Network Health Dashboard**: Built-in monitoring for **LiveKit** (Room/Peers) and **ZeroTier** (VPN IP) connectivity.
+- **Web-Based Setup**: Onboard configuration UI for easy WiFi provisioning and device binding.
 - **Secure Authentication**: Ed25519-based device authentication and claiming system.
 - **Interactive Map**: Leaflet-based map visualization tracking the drone's path.
-- **Responsive Design**: Modern, dark-themed UI built with Tailwind CSS.
 
 ## 🏗️ Architecture
 
-- **Backend**: Go (Golang) server handling device authentication, claiming, and LiveKit token generation.
+- **Backend**: Go (Golang) server handling device authentication, claiming, and LiveKit token generation (Deployed on Render).
 - **Device Middleware**: Go application running on the drone (or edge) that bridges MAVLink telemetry to LiveKit.
 - **Frontend**: React application using LiveKit SDK to display video and telemetry.
 
@@ -28,54 +29,27 @@
 - **Node.js** (v18 or higher)
 - **LiveKit Cloud Account** (API Key, Secret, and URL)
 
-### 1. Configuration
+### 1. Configuration (Backend)
 
-Create a `.env` file in the `backend/` directory with your LiveKit credentials:
+The backend is configured to run on Render. Ensure your environment variables (LIVEKIT keys, POSTGRES_URL) are set in your deployment provider.
 
-```env
-LIVEKIT_API_KEY=your_api_key
-LIVEKIT_API_SECRET=your_api_secret
-LIVEKIT_URL=wss://your-project.livekit.cloud
-```
+### 2. Run the Device Middleware (Drone Side)
 
-### 2. Run the Backend
-
-The backend handles authentication and token generation.
-
-```bash
-cd backend
-go mod tidy
-go run main.go
-```
-*Server runs on port 8080.*
-
-### 3. Run the Device Middleware (Drone Side)
-
-This simulates the drone. It generates a pairing code and connects to LiveKit.
+The middleware now includes a web-based setup wizard.
 
 ```bash
 cd device-middleware
-go mod tidy
-go run main.go
+# Build the binary (includes UI)
+go build -o middleware-bin .
+# Run
+./middleware-bin
 ```
 
-1.  Copy the **Pairing Code** displayed in the terminal (e.g., `7f9387a6`).
-2.  Copy the **Public Key** (if needed for manual claiming, though the UI/Curl handles this).
+1.  Connect to the same network as the device.
+2.  Open **`http://<DEVICE_IP>:8085`** in your browser.
+3.  Enter the **Pairing Code** shown in the Web UI into your Cloud Dashboard to claim the device.
 
-### 4. Claim the Device
-
-Register the device with the backend using the pairing code.
-
-```bash
-# Replace PAIRING_CODE and PUBLIC_KEY with values from middleware output
-curl -X POST http://localhost:8080/api/v1/devices/claim \
-  -H "Content-Type: application/json" \
-  -d '{"pairing_code": "PAIRING_CODE", "public_key": "PUBLIC_KEY"}'
-```
-
-*Once claimed, the middleware will automatically connect to LiveKit.*
-
-### 5. Run the Frontend (GCS Dashboard)
+### 3. Run the Cloud Frontend (GCS Dashboard)
 
 ```bash
 cd frontend
@@ -83,7 +57,7 @@ npm install
 npm run dev
 ```
 
-Open your browser to `http://localhost:5173`. You should see the live video feed and telemetry from the middleware.
+Open your browser to the local or deployed URL (e.g., `https://middleware-gcs-assigment.vercel.app`). You should see the live video feed and telemetry from the middleware.
 
 ## 🛠️ Tech Stack
 

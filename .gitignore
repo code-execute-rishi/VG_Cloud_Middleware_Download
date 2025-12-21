@@ -18,3 +18,11 @@ device-middleware/ui/dist/
 *.deb
 *.ivf
 test_pipe
+
+# Clutter / Local Only
+*.sh
+*.html
+*.txt
+package.json
+package-lock.json
+AGENT_INSTRUCTIONS.md
