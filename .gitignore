@@ -1,56 +1,20 @@
-# Dependencies
-node_modules/
-.pnp
-.pnp.js
-
-# Testing
-coverage/
-
-# Production
-build/
-dist/
-
-# Misc
+# General
 .DS_Store
+*.log
+*.pem
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-
-# Logs
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Editor directories and files
-.idea
-.vscode/*
-!.vscode/extensions.json
-*.suo
-*.ntvs
-*.njsproj
-*.sln
-*.sw?
-
-# OS generated files
-Thumbs.db
-
-# Agent Instructions
-AGENT_INSTRUCTIONS.md
 
 # Go
-vendor/
-*.ivf
-device-middleware/device-middleware
-backend/vyom-backend
-test_pipe
-
-
-# Middleware Config & Binaries
 middleware-bin
-demo_config.json
-identity.json
+device-middleware/device.log
 device-middleware/middleware-bin
-device-middleware/demo_config.json
-device-middleware/identity.json
+
+# Node / Frontend
+node_modules/
+device-middleware/ui/node_modules/
+device-middleware/ui/dist/
+
+# Artifacts
+*.deb
+*.ivf
+test_pipe
