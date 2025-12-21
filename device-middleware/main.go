@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -39,7 +41,7 @@ func init() {
 	if envURL := os.Getenv("BACKEND_URL"); envURL != "" {
 		BackendBaseURL = envURL
 	} else {
-		BackendBaseURL = "http://4.247.135.200"
+		BackendBaseURL = "https://vg-cloud-backend.onrender.com"
 	}
 	log.Printf("🔗 Backend URL Set to: %s", BackendBaseURL)
 }
@@ -50,6 +52,8 @@ type ConfigFile struct {
 	SSID       string `json:"ssid"`
 	Password   string `json:"password"`
 	Resolution string `json:"resolution"`
+	FCPort     string `json:"fc_port"`
+	FCBaud     int    `json:"fc_baud"`
 }
 
 type GlobalDeviceStatus struct {
@@ -61,8 +65,11 @@ type GlobalDeviceStatus struct {
 }
 
 type HardwareStatus struct {
-	FCConnected  bool `json:"fc_connected"`
-	CamConnected bool `json:"cam_connected"`
+	FCConnected  bool   `json:"fc_connected"`
+	CamConnected bool   `json:"cam_connected"`
+	FCFirmware   string `json:"fc_firmware,omitempty"`
+	FCType       string `json:"fc_type,omitempty"`
+	CurrentPort  string `json:"current_port,omitempty"`
 }
 
 type CameraConfig struct {
@@ -138,6 +145,14 @@ func main() {
 
 	log.Println("Booting Drone Device Middleware...")
 
+	// Setup Multi-Writer Logging (File + Console)
+	logFile, err := os.OpenFile("device.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err == nil {
+		log.SetOutput(io.MultiWriter(os.Stdout, logFile))
+	} else {
+		log.Println("⚠️ Failed to open device.log for writing")
+	}
+
 	// 1. Initialize API Client & Identity
 	apiClient = NewBackendClient(BackendBaseURL)
 	if err := apiClient.LoadOrCreateIdentity(); err != nil {
@@ -159,8 +174,10 @@ func startWebServer() {
 	mux.HandleFunc("/api/system-info", handleSystemInfo)
 	mux.HandleFunc("/api/status", handleStatus)
 	mux.HandleFunc("/api/update-config", handleUpdateConfig)
+	mux.HandleFunc("/api/serial-ports", handleSerialPorts)
 	mux.HandleFunc("/api/wifi-scan", handleWifiScan)
 	mux.HandleFunc("/api/save-config", handleSaveConfig)
+	mux.HandleFunc("/api/logs", handleLogs)
 	mux.HandleFunc("/api/stream", handleLocalStream)
 
 	// Determine UI Directory
@@ -370,6 +387,10 @@ func telemetryAndClaimLoop(ctx context.Context, room *lksdk.Room) {
 				if serialPort := GetSerialPorts(); serialPort != "" {
 					log.Printf("[MAVLink] 🔌 Auto-Detected Serial Port: %s. Binding...", serialPort)
 					endpoints = append(endpoints, gomavlib.EndpointSerial{Device: serialPort, Baud: 57600})
+
+					deviceStatusMutex.Lock()
+					deviceStatus.Hardware.CurrentPort = serialPort
+					deviceStatusMutex.Unlock()
 				} else {
 					log.Println("[MAVLink] ⚠️ No Serial Port Found. Running in Simulator Mode (UDP Only).")
 				}
@@ -448,6 +469,14 @@ func telemetryAndClaimLoop(ctx context.Context, room *lksdk.Room) {
 							} else {
 								telemFlightMode = "Standby"
 							}
+
+							// Update Global Hardware Status (Thread-Safe)
+							deviceStatusMutex.Lock()
+							deviceStatus.Hardware.FCConnected = true
+							deviceStatus.Hardware.FCType = fmt.Sprintf("MAV_TYPE_%d", msg.Type)
+							deviceStatus.Hardware.FCFirmware = fmt.Sprintf("AUTOPILOT_%d", msg.Autopilot)
+							// CurrentPort is set during connection establishment
+							deviceStatusMutex.Unlock()
 						}
 						dataMutex.Unlock()
 					}
@@ -709,12 +738,14 @@ func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		Resolution string `json:"resolution"`
+		FCPort     string `json:"fc_port"`
+		FCBaud     int    `json:"fc_baud"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON", 400)
 		return
 	}
-	log.Printf(">>> UI REQUESTED CONFIG UPDATE: Resolution=%s", req.Resolution)
+	log.Printf(">>> UI REQUESTED CONFIG UPDATE: Resolution=%s, FCPort=%s, FCBaud=%d", req.Resolution, req.FCPort, req.FCBaud)
 
 	// Update Runtime
 	if req.Resolution != "" {
@@ -735,15 +766,51 @@ func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	data, _ := os.ReadFile(ConfigFileName)
 	var config ConfigFile
 	json.Unmarshal(data, &config)
-	config.Resolution = req.Resolution
+	if req.Resolution != "" {
+		config.Resolution = req.Resolution
+	}
+	if req.FCPort != "" {
+		config.FCPort = req.FCPort
+	}
+	if req.FCBaud != 0 {
+		config.FCBaud = req.FCBaud
+	}
+
 	file, _ := json.MarshalIndent(config, "", "  ")
 	os.WriteFile(ConfigFileName, file, 0644)
 
 	jsonResponse(w, map[string]string{"status": "updated"})
 }
 
+func handleSerialPorts(w http.ResponseWriter, r *http.Request) {
+	matches, _ := filepath.Glob("/dev/tty*")
+	// Filter for common serial devices
+	var ports []string
+	for _, m := range matches {
+		if strings.HasPrefix(m, "/dev/ttyUSB") || strings.HasPrefix(m, "/dev/ttyACM") || strings.HasPrefix(m, "/dev/ttyAMA") || strings.HasPrefix(m, "/dev/serial") {
+			ports = append(ports, m)
+		}
+	}
+	jsonResponse(w, ports)
+}
+
 func handleWifiScan(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, []interface{}{})
+}
+
+func handleLogs(w http.ResponseWriter, r *http.Request) {
+	data, err := os.ReadFile("device.log")
+	if err != nil {
+		http.Error(w, "Failed to read log file", 500)
+		return
+	}
+	if r.URL.Query().Get("download") == "true" {
+		w.Header().Set("Content-Disposition", "attachment; filename=device.log")
+		w.Header().Set("Content-Type", "application/octet-stream")
+	} else {
+		w.Header().Set("Content-Type", "text/plain")
+	}
+	w.Write(data)
 }
 
 // --- HELPERS ---
@@ -832,13 +899,28 @@ func startCamera(room *lksdk.Room) {
 		// Fix: Switching to MJPEG pipe. JPEG is self-describing so stride doesn't matter.
 		// Pipeline: rpicam-vid (MJPEG) -> stdout -> fdsrc -> jpegdec -> videoconvert -> I420
 
+		// Dynamic Pipeline Construction
+		var sourcePipeline string
+		if _, err := exec.LookPath("rpicam-vid"); err == nil {
+			log.Println("[Camera] Using Raspberry Pi Camera (rpicam-vid)")
+			sourcePipeline = fmt.Sprintf(
+				"rpicam-vid --timeout 0 --nopreview --width %d --height %d --framerate 30 --codec mjpeg -o - | "+
+					"gst-launch-1.0 fdsrc ! image/jpeg,width=%d,height=%d,framerate=30/1 ! jpegdec ! videoconvert ! video/x-raw,format=I420",
+				width, height, width, height,
+			)
+		} else {
+			log.Println("[Camera] rpicam-vid not found. Falling back to V4L2 (USB/Virtual Camera)...")
+			sourcePipeline = fmt.Sprintf(
+				"gst-launch-1.0 v4l2src device=/dev/video0 ! videoconvert ! video/x-raw,format=I420,width=%d,height=%d,framerate=30/1",
+				width, height,
+			)
+		}
+
 		fullCmd := fmt.Sprintf(
-			"rpicam-vid --timeout 0 --nopreview --width %d --height %d --framerate 30 --codec mjpeg -o - | "+
-				"gst-launch-1.0 fdsrc ! image/jpeg,width=%d,height=%d,framerate=30/1 ! jpegdec ! videoconvert ! video/x-raw,format=I420 ! "+
-				"tee name=t ! "+
+			"%s ! tee name=t ! "+
 				"queue max-size-buffers=4 leaky=downstream ! vp8enc error-resilient=1 deadline=1 keyframe-max-dist=30 cpu-used=5 ! \"video/x-vp8\" ! queue ! avmux_ivf ! filesink location=%s sync=false async=false "+
 				"t. ! queue max-size-buffers=4 leaky=downstream ! videoscale ! \"video/x-raw,width=320,height=240\" ! jpegenc ! multipartmux boundary=vyomboundary ! tcpserversink host=127.0.0.1 port=8081 sync=false",
-			width, height, width, height, pipePath,
+			sourcePipeline, pipePath,
 		)
 
 		log.Printf("[Camera] Starting Pipeline Step: %s", fullCmd)
@@ -888,16 +970,8 @@ func startCamera(room *lksdk.Room) {
 		}()
 
 		time.Sleep(1 * time.Second)
-		// Wait for pipe to have data (GStreamer actually started writing)
-		waitForPipe := 0
-		for waitForPipe < 10 {
-			info, err := os.Stat(pipePath)
-			if err == nil && info.Size() > 0 {
-				break
-			}
-			time.Sleep(500 * time.Millisecond)
-			waitForPipe++
-		}
+		// Wait for pipe to be ready (just a small sleep to let GStreamer process start)
+		time.Sleep(200 * time.Millisecond)
 
 		file, err := os.Open(pipePath)
 		if err != nil {

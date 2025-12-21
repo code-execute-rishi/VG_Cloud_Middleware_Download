@@ -45,6 +45,7 @@ ssh -o StrictHostKeyChecking=no -i $KEY_FILE $REMOTE_USER@$VM_IP << 'EOF'
   sudo docker-compose down || true
   # Force rebuild to pick up code changes (ignore cache)
   sudo docker-compose build --no-cache
+  # Start Backend and Nginx (DB is external)
   sudo docker-compose up -d
   
   echo ">>> DEPLOYMENT SUCCESSFUL!"
