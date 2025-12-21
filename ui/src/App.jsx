@@ -4,7 +4,7 @@ import MJPEGStream from './components/MJPEGStream';
 import SystemHealth from './components/SystemHealth';
 
 function App() {
-  const [view, setView] = useState("dashboard"); // 'dashboard', 'camera'
+  const [view, setView] = useState("dashboard"); // 'dashboard', 'camera', 'logs'
   const [status, setStatus] = useState(null);
   const [systemInfo, setSystemInfo] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -14,7 +14,14 @@ function App() {
     ssid: "",
     password: "",
     resolution: "",
+    camera_type: "auto",
+    camera_device: "auto",
+    fc_port: "auto",
+    fc_baud: 57600
   });
+
+  const [cameras, setCameras] = useState([]);
+  const [serialPorts, setSerialPorts] = useState([]);
 
   // Poll Status
   useEffect(() => {
@@ -27,7 +34,14 @@ function App() {
           // Sync form only if not set (Initial Load)
           setFormData(prev => {
             if (prev.resolution === "" && data.camera_config?.resolution) {
-              return { ...prev, resolution: data.camera_config.resolution };
+              return {
+                ...prev,
+                resolution: data.camera_config.resolution,
+                camera_type: data.camera_config.camera_type || "auto",
+                camera_device: data.camera_config.camera_device || "auto",
+                fc_port: data.camera_config.fc_port || "auto",
+                fc_baud: data.camera_config.fc_baud || 57600
+              };
             }
             return prev;
           });
@@ -37,8 +51,10 @@ function App() {
       }
     };
 
-    // Fetch System Info once
+    // Fetch System Info & Cameras once
     fetch("/api/system-info").then(r => r.json()).then(setSystemInfo);
+    fetch("/api/cameras").then(r => r.json()).then(setCameras).catch(console.error);
+    fetch("/api/serial-ports").then(r => r.json()).then(setSerialPorts).catch(console.error);
 
     const interval = setInterval(poll, 2000);
     poll();
@@ -51,7 +67,7 @@ function App() {
       const res = await fetch("/api/save-config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formData),
+        body: JSON.stringify({ ssid: formData.ssid, password: formData.password }),
       });
       if (!res.ok) throw new Error("Result not OK");
       alert("✅ WiFi Configuration Saved!\n\nNext Step: Go to your Cloud Dashboard and enter the Pairing Code to complete the binding.");
@@ -68,7 +84,13 @@ function App() {
       await fetch("/api/update-config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ resolution: formData.resolution }),
+        body: JSON.stringify({
+          resolution: formData.resolution,
+          camera_type: formData.camera_type,
+          camera_device: formData.camera_device,
+          fc_port: formData.fc_port,
+          fc_baud: parseInt(formData.fc_baud)
+        }),
       });
       alert("Settings Updated!");
     } catch (e) {
@@ -158,6 +180,12 @@ function App() {
           >
             FC/Camera Settings
           </button>
+          <button
+            className={`nav-tab ${view === 'logs' ? 'active' : ''}`}
+            onClick={() => setView('logs')}
+          >
+            System Logs
+          </button>
         </div>
       </header>
 
@@ -189,6 +217,34 @@ function App() {
               />
             </div>
 
+            {/* Camera Config Section */}
+            <h3>Camera Settings</h3>
+            <div style={{ display: 'flex', gap: '15px', marginBottom: '0px' }}>
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>Camera Device</label>
+                <select
+                  value={formData.camera_device}
+                  onChange={(e) => setFormData({ ...formData, camera_device: e.target.value })}
+                >
+                  <option value="auto">Auto Detection</option>
+                  {cameras && cameras.map(cam => (
+                    <option key={cam} value={cam}>{cam}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>Camera Type</label>
+                <select
+                  value={formData.camera_type}
+                  onChange={(e) => setFormData({ ...formData, camera_type: e.target.value })}
+                >
+                  <option value="auto">Auto Detect</option>
+                  <option value="csi">CSI Ribbon Cable (RPi)</option>
+                  <option value="usb">USB Camera</option>
+                </select>
+              </div>
+            </div>
+
             <div className="form-group">
               <label>Camera Resolution</label>
               <select
@@ -200,11 +256,82 @@ function App() {
                 <option value="1920x1080">1080p</option>
               </select>
             </div>
+
+            {/* Flight Controller Section */}
+            <h3 style={{ marginTop: '2rem' }}>Flight Controller</h3>
+
+            {/* FC Status Info */}
+            <div className="card" style={{ padding: '1rem', marginBottom: '1.5rem', background: '#fbfbfd', border: '1px solid #eee' }}>
+              <div className="info-row" style={{ justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                <span className="info-label">Connection Status</span>
+                {status?.hardware_status?.fc_connected ? (
+                  <span className="tag connected">Connected</span>
+                ) : (
+                  <span className="tag" style={{ color: 'red', background: '#ffebeb' }}>Disconnected</span>
+                )}
+              </div>
+              {status?.hardware_status?.fc_connected && (
+                <>
+                  <div className="info-row" style={{ justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                    <span className="info-label">Autopilot Type</span>
+                    <span className="info-value">{status?.hardware_status?.fc_type || "Unknown"}</span>
+                  </div>
+                  <div className="info-row" style={{ justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                    <span className="info-label">Firmware</span>
+                    <span className="info-value">{status?.hardware_status?.fc_firmware || "Unknown"}</span>
+                  </div>
+                  <div className="info-row" style={{ justifyContent: 'space-between' }}>
+                    <span className="info-label">Current Port</span>
+                    <span className="info-value code">{status?.hardware_status?.current_port}</span>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', gap: '15px' }}>
+              <div className="form-group" style={{ flex: 2 }}>
+                <label>Serial Port</label>
+                <select
+                  value={formData.fc_port}
+                  onChange={(e) => setFormData({ ...formData, fc_port: e.target.value })}
+                >
+                  <option value="auto">Auto-Detect (Recommended)</option>
+                  {serialPorts && serialPorts.map(port => (
+                    <option key={port} value={port}>{port}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="form-group" style={{ flex: 1 }}>
+                <label>Baud Rate</label>
+                <select
+                  value={formData.fc_baud}
+                  onChange={(e) => setFormData({ ...formData, fc_baud: parseInt(e.target.value) })}
+                >
+                  <option value="57600">57600 (Telemetry)</option>
+                  <option value="115200">115200 (Default)</option>
+                  <option value="921600">921600 (High Speed)</option>
+                </select>
+              </div>
+            </div>
+
             <button className="btn-primary" onClick={handleUpdateConfig} disabled={loading}>
               {loading ? "Updating..." : "Update Settings"}
             </button>
           </div>
         )}
+
+        {view === 'logs' && (
+          <div className="card">
+            <h2>System Logs</h2>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '10px' }}>
+              <a href="/api/logs?download=true" className="btn-small" target="_blank" rel="noopener noreferrer">
+                Download Logs
+              </a>
+            </div>
+            <LogsViewer />
+          </div>
+        )}
+
       </main>
     </div>
   );
@@ -218,5 +345,37 @@ const StatusItem = ({ label, value, active, warned }) => (
     </div>
   </div>
 );
+
+const LogsViewer = () => {
+  const [logs, setLogs] = useState("Loading logs...");
+
+  useEffect(() => {
+    fetch("/api/logs")
+      .then(res => {
+        if (!res.ok) throw new Error("Failed to load");
+        return res.text();
+      })
+      .then(text => setLogs(text))
+      .catch(err => setLogs("Error loading logs: " + err.message));
+  }, []);
+
+  return (
+    <div style={{
+      background: '#1a1a1a',
+      color: '#00ff00',
+      padding: '15px',
+      borderRadius: '8px',
+      fontFamily: 'source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace',
+      fontSize: '13px',
+      lineHeight: '1.5',
+      height: '500px',
+      overflow: 'auto',
+      whiteSpace: 'pre',
+      border: '1px solid #333'
+    }}>
+      {logs}
+    </div>
+  );
+};
 
 export default App;
