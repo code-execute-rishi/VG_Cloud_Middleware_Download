@@ -201,6 +201,10 @@ function App() {
           </div>
         )}
 
+        {view === 'dashboard' && (
+          <NetworkStatusCard status={status} />
+        )}
+
         {view === 'camera' && (
           <div className="card">
 
@@ -374,6 +378,69 @@ const LogsViewer = () => {
       border: '1px solid #333'
     }}>
       {logs}
+    </div>
+  );
+};
+
+
+
+const NetworkStatusCard = ({ status }) => {
+  const lk = status?.livekit_status || {};
+  const zt = status?.zerotier_status || {};
+
+  return (
+    <div className="card">
+      <h2>Network Health</h2>
+
+      {/* LiveKit Section */}
+      <h3 style={{ marginTop: '1rem', fontSize: '1rem', color: '#666' }}>LiveKit (Video/Control)</h3>
+      <div style={{ background: '#fbfbfd', padding: '1rem', borderRadius: '8px', border: '1px solid #eee' }}>
+        <div className="info-row" style={{ justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+          <span className="info-label">Status</span>
+          {lk.state === 'Connected' ? (
+            <span className="tag connected">Connected</span>
+          ) : (
+            <span className="tag" style={{ color: 'red', background: '#ffebeb' }}>{lk.state || "Disconnected"}</span>
+          )}
+        </div>
+        <div className="info-row" style={{ justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+          <span className="info-label">Room</span>
+          <span className="info-value code">{lk.room_name || "-"}</span>
+        </div>
+        <div className="info-row" style={{ justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+          <span className="info-label">Peers</span>
+          <span className="info-value">{lk.participants || 0}</span>
+        </div>
+        {lk.last_error && (
+          <div className="info-row" style={{ justifyContent: 'space-between', color: 'red' }}>
+            <span className="info-label" style={{ color: 'red' }}>Error</span>
+            <span className="info-value">{lk.last_error}</span>
+          </div>
+        )}
+      </div>
+
+      {/* ZeroTier Section */}
+      <h3 style={{ marginTop: '1.5rem', fontSize: '1rem', color: '#666' }}>ZeroTier (VPN)</h3>
+      <div style={{ background: '#fbfbfd', padding: '1rem', borderRadius: '8px', border: '1px solid #eee' }}>
+        <div className="info-row" style={{ justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+          <span className="info-label">Status</span>
+          {zt.state === 'Connected' ? (
+            <span className="tag connected">Connected</span>
+          ) : (
+            <span className="tag" style={{ color: 'red', background: '#ffebeb' }}>{zt.state || "Disconnected"}</span>
+          )}
+        </div>
+        <div className="info-row" style={{ justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+          <span className="info-label">IP Address</span>
+          <span className="info-value code">{zt.ip_address || "-"}</span>
+        </div>
+        {zt.last_error && (
+          <div className="info-row" style={{ justifyContent: 'space-between', color: 'red' }}>
+            <span className="info-label" style={{ color: 'red' }}>Error</span>
+            <span className="info-value">{zt.last_error}</span>
+          </div>
+        )}
+      </div>
     </div>
   );
 };
