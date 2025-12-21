@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import "./App.css";
+import QRCode from "react-qr-code";
 import MJPEGStream from './components/MJPEGStream';
 import SystemHealth from './components/SystemHealth';
 
@@ -124,9 +125,27 @@ function App() {
 
         <main className="main-content">
           <div className="card bind-card">
-            <h2>Bind Device</h2>
-            <p>Pairing Code: <span className="code">{systemInfo.pairing_code}</span></p>
+            <h2>Connect Device</h2>
+            <p>Scan to link this device to your account</p>
 
+            <div style={{ background: 'white', padding: '16px', borderRadius: '8px', margin: '20px 0' }}>
+              {status?.auth_status?.verification_uri ? (
+                <QRCode value={status.auth_status.verification_uri} size={180} />
+              ) : (
+                <div className="spinner"></div>
+              )}
+            </div>
+
+            <div style={{ marginBottom: '20px' }}>
+              <p style={{ marginBottom: '5px', color: 'var(--text-sub)' }}>Or enter code at <b>{status?.auth_status?.verification_uri?.split('?')[0]}</b></p>
+              <h1 style={{ fontSize: '2.5rem', margin: '5px 0', letterSpacing: '2px' }}>
+                {status?.auth_status?.user_code || "Loading..."}
+              </h1>
+            </div>
+
+            <hr style={{ width: '100%', borderColor: '#eee', margin: '20px 0' }} />
+
+            <h3>WiFi Settings</h3>
             <div className="form-group" style={{ width: '100%', textAlign: 'left' }}>
               <label>WiFi SSID</label>
               <input
@@ -145,11 +164,8 @@ function App() {
             </div>
 
             <button className="btn-primary" onClick={handleBind} disabled={loading}>
-              {loading ? "Saving..." : "Save WiFi Settings"}
+              {loading ? "Saving..." : "Update WiFi"}
             </button>
-            <p className="help-link" style={{ marginTop: '15px' }}>
-              ℹ️ To finish setup, enter code <b>{systemInfo.pairing_code}</b> in your Cloud Dashboard.
-            </p>
           </div>
         </main>
       </div>
