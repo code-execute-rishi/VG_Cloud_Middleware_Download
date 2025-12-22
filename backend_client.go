@@ -188,24 +188,10 @@ func (c *BackendClient) UpdateTelemetry(lat, lon, alt, speed, head float64, sig,
 }
 
 func (c *BackendClient) CheckLiveness() error {
-	// Simple ping to see if token is valid
-	_, ok := c.CheckClaim()
-	if !ok {
-		// This is ambiguous. CheckClaim returns (local, remote).
-		// If remote says false, then it's forgotten?
-	}
-	// Better: GET /api/v1/devices/{id}
-	// If 404/401 -> Forgotten.
-
-	url := fmt.Sprintf("/api/v1/devices/%s", c.Identity.DeviceID)
-	var dummy interface{}
-	err := c.post(url, nil, &dummy) // GET actually... post helper is POST.
-
-	// We need a GET helper or just use POST CheckClaim
-	// CheckClaim is POST.
+	// Check if device is still claimed on the server
 	req := CheckClaimRequest{DeviceID: c.Identity.DeviceID}
 	var res CheckClaimResponse
-	err = c.post("/api/v1/devices/auth/check-claim", req, &res)
+	err := c.post("/api/v1/devices/auth/check-claim", req, &res)
 
 	if err != nil {
 		if strings.Contains(err.Error(), "DEVICE_FORGOTTEN") {
@@ -281,6 +267,12 @@ func (c *BackendClient) doRequest(req *http.Request, target interface{}) error {
 		respBody, _ := io.ReadAll(resp.Body)
 		if resp.StatusCode == 401 { // Check for forgotten
 			if strings.Contains(string(respBody), "Unauthorized") {
+				return fmt.Errorf("DEVICE_FORGOTTEN")
+			}
+		}
+		// V3 Correction: Backend returns 404 if device is deleted (Forgotten)
+		if resp.StatusCode == 404 {
+			if strings.Contains(string(respBody), "Device doesn't exist") || strings.Contains(string(respBody), "Not Found") {
 				return fmt.Errorf("DEVICE_FORGOTTEN")
 			}
 		}
