@@ -563,6 +563,17 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 	} else {
 		defer node.Close()
 		log.Printf("[MAVLink] Link Active")
+
+		// Request Data Streams
+		msg := &common.MessageRequestDataStream{
+			TargetSystem:    1,
+			TargetComponent: 1,
+			ReqStreamId:     uint8(common.MAV_DATA_STREAM_ALL),
+			ReqMessageRate:  4, // 4 Hz
+			StartStop:       1,
+		}
+		node.WriteMessageAll(msg)
+		log.Println("[MAVLink] Requested Data Streams (4Hz)")
 	}
 
 	ticker := time.NewTicker(300 * time.Millisecond) // 3Hz Telemetry
@@ -572,6 +583,7 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 	defer claimTicker.Stop()
 
 	// Local Telemetry State (Raw MAVLink Units)
+	var telemMutex sync.RWMutex
 	var telemLat, telemLon int32
 	var telemAlt int32                           // mm
 	var telemHdg uint16                          // cdeg
@@ -598,15 +610,19 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 						}
 						// Global Position
 						if msg, ok := frm.Message().(*common.MessageGlobalPositionInt); ok {
+							telemMutex.Lock()
 							telemLat = msg.Lat
 							telemLon = msg.Lon
 							telemAlt = msg.Alt
 							telemHdg = msg.Hdg
+							telemMutex.Unlock()
 						}
 						// Sys Status (Battery)
 						if msg, ok := frm.Message().(*common.MessageSysStatus); ok {
+							telemMutex.Lock()
 							telemBatt = float32(msg.BatteryRemaining)
 							telemVolt = float32(msg.VoltageBattery) / 1000.0 // mV to V
+							telemMutex.Unlock()
 							// Debug Log
 							if telemVolt > 0 {
 								// log.Printf("🔋 Battery: %d%%, Voltage: %.2fV", msg.BatteryRemaining, telemVolt)
@@ -614,7 +630,10 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 						}
 						// VFR HUD (Speed)
 						if msg, ok := frm.Message().(*common.MessageVfrHud); ok {
+							telemMutex.Lock()
 							telemSpeed = float32(msg.Groundspeed)
+							telemMutex.Unlock()
+							// log.Printf("🚀 Speed: %.2f m/s", telemSpeed)
 						}
 					}
 				}
@@ -629,6 +648,7 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 			if activeRoom != nil && activeRoom.LocalParticipant != nil {
 
 				// Prepare Payload
+				telemMutex.RLock()
 				payload := LiveKitTelemetry{
 					Timestamp: time.Now().UnixMilli(),
 					GlobalPositionInt: &GlobalPosition{
@@ -644,6 +664,7 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 					Mode:  telemMode,
 					Armed: false, // Todo read heartbeat custom mode
 				}
+				telemMutex.RUnlock()
 
 				data, _ := json.Marshal(LiveKitDataMessage{
 					Type: "telemetry",
@@ -659,7 +680,11 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 		case <-claimTicker.C:
 			// Check Connection Health
 			// Ping /telemetry endpoint to update "Last Seen"
+			// Check Connection Health
+			// Ping /telemetry endpoint to update "Last Seen"
+			telemMutex.RLock()
 			client.UpdateTelemetry(float64(telemLat)/1e7, float64(telemLon)/1e7, float64(telemAlt)/1000.0, float64(telemSpeed), float64(telemHdg), 100, int(telemBatt))
+			telemMutex.RUnlock()
 
 			isClaimed, isServerClaimed := client.CheckClaim()
 
