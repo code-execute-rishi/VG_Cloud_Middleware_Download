@@ -57,6 +57,9 @@ type ConfigFile struct {
 	FCBaud     int    `json:"fc_baud"`
 }
 
+// --- Data Functions ---
+// Identity struct moved to line 153
+
 // ConnectionState Enum
 type ConnectionState string
 
@@ -124,27 +127,28 @@ type SysStatus struct {
 	BatteryRemaining int     `json:"battery_remaining"`
 }
 type GlobalPosition struct {
-	Lat float64 `json:"lat"`
-	Lon float64 `json:"lon"`
-	Alt float32 `json:"alt"`
-	Hdg uint16  `json:"hdg"`
-	Vx  int16   `json:"vx"`
-	Vy  int16   `json:"vy"`
-	Vz  int16   `json:"vz"`
+	Lat int32  `json:"lat"`
+	Lon int32  `json:"lon"`
+	Alt int32  `json:"alt"`
+	Hdg uint16 `json:"hdg"`
+	Vx  int16  `json:"vx"`
+	Vy  int16  `json:"vy"`
+	Vz  int16  `json:"vz"`
 }
 type GpsRaw struct {
 	FixType    uint8 `json:"fix_type"`
 	Satellites uint8 `json:"satellites_visible"`
 }
 type LiveKitDataMessage struct {
-	Type    string           `json:"type"`
-	Payload LiveKitTelemetry `json:"payload"`
+	Type string           `json:"type"`
+	Data LiveKitTelemetry `json:"data"`
 }
 
 // --- MISSING TYPES (Moved from backend_client.go) ---
 type Identity struct {
-	DeviceID string `json:"device_id"`
-	Token    string `json:"token"`
+	DeviceID  string `json:"device_id"`
+	Token     string `json:"token"`
+	AuthToken string `json:"auth_token"`
 }
 
 type CheckClaimRequest struct {
@@ -175,12 +179,14 @@ type ZerotierConfig struct {
 type VerifyResponse struct {
 	LiveKitToken string         `json:"livekit_token"`
 	LiveKitURL   string         `json:"livekit_url"`
+	AuthToken    string         `json:"auth_token"`
 	RoomName     string         `json:"room_name"`
 	Zerotier     ZerotierConfig `json:"zerotier"`
 }
 
 type LKTokenResponse struct {
-	Token string `json:"token"`
+	Token      string `json:"token"`
+	LiveKitURL string `json:"livekit_url"`
 }
 
 // --- Global State ---
@@ -275,6 +281,7 @@ func handleClaim(w http.ResponseWriter, r *http.Request) {
 	// Expected Query Pars: ?token=JWT&device_id=UUID&name=MyDrone
 	token := r.URL.Query().Get("token")
 	deviceID := r.URL.Query().Get("device_id")
+	authToken := r.URL.Query().Get("auth_token")
 
 	if token == "" || deviceID == "" {
 		http.Error(w, "Missing token or device_id", http.StatusBadRequest)
@@ -283,15 +290,16 @@ func handleClaim(w http.ResponseWriter, r *http.Request) {
 
 	// Save Identity
 	apiClient.Identity = &Identity{
-		DeviceID: deviceID,
-		Token:    token,
+		DeviceID:  deviceID,
+		Token:     token,
+		AuthToken: authToken, // New: Save API Auth Token
 	}
 	apiClient.TypifySaveIdentity()
 
 	// Create Config File to mark "Configured"
 	config := ConfigFile{
 		Resolution: "640x480",
-		FCPort:     "/dev/ttyACM0",
+		FCPort:     "auto",
 		FCBaud:     57600,
 	}
 	data, _ := json.MarshalIndent(config, "", "  ")
@@ -362,7 +370,13 @@ func handleLocalStream(w http.ResponseWriter, r *http.Request) {
 func runStateLoop() {
 	for {
 		// Load Config
-		if _, err := os.Stat(ConfigFileName); os.IsNotExist(err) {
+		var config ConfigFile
+		configData, err := os.ReadFile(ConfigFileName)
+		if err == nil {
+			json.Unmarshal(configData, &config)
+		}
+
+		if os.IsNotExist(err) {
 			setStatus(false, false, false)
 
 			// --- V3 DEVICE FLOW LOGIC ---
@@ -392,20 +406,20 @@ func runStateLoop() {
 		// 2. Load Identity & Config
 		if apiClient.Identity == nil {
 			if err := apiClient.LoadOrCreateIdentity(); err != nil {
-				log.Printf("Failed to load identity: %v", err)
+				log.Printf("Failed to load identity: %v - Retrying in 5s...", err)
 				time.Sleep(5 * time.Second)
 				continue
 			}
 		}
 
-		log.Println("[Loop] Config Found. Starting Mission Services...")
+		log.Println("[Loop] Config & Identity Found. Starting Mission Services...")
 
 		// 2. Authenticate
 		// V3: Token is in Identity. We just use it.
 		// Optional: VerifyToken endpoint call
 		log.Println("[Loop] Authenticating...")
 		// Assuming Authenticate() in backend_client.go is updated to check/refresh token
-		_, err := apiClient.Authenticate()
+		_, err = apiClient.Authenticate()
 		if err != nil {
 			deviceStatusMutex.Lock()
 			deviceStatus.LiveKit.State = StateError
@@ -452,7 +466,8 @@ func runStateLoop() {
 		connectToLiveKit(apiClient.Identity.DeviceID, apiClient)
 
 		// 4. Start Telemetry Loop & MAVLink
-		telemetryAndClaimLoop(apiClient)
+		// Pass the parsed Config to the telemetry loop
+		telemetryAndClaimLoop(apiClient, config)
 
 		// If loop returns, it means we lost connection or Reset triggered.
 		// Wait before restart
@@ -462,52 +477,92 @@ func runStateLoop() {
 
 // --- TELEMETRY & CLAIM LOOP ---
 
-func telemetryAndClaimLoop(client *BackendClient) {
+func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 	// Start MAVLink
 	// Using GStreamer Pipeline for Video
-	// ... (Rest of logic remains same, just calling client.CheckLiveness)
 
+	// Determine Resolution
+	res := config.Resolution
+	if res == "" {
+		res = "640x480"
+	}
 	// START CAMERA
 	ctx, cancel := context.WithCancel(context.Background())
 	cameraMutex.Lock()
 	cameraCancel = cancel
+	cameraResolution = res // Update Global
 	cameraMutex.Unlock()
 
-	go startCamera(ctx, cameraResolution)
+	go startCamera(ctx, res)
 	defer cancel()
 
-	// MAVLINK
-	node, err := gomavlib.NewNode(gomavlib.NodeConf{
-		Endpoints: []gomavlib.EndpointConf{
-			gomavlib.EndpointSerial{
-				Device: "/dev/ttyACM0", // Changed Address -> Device
-				Baud:   57600,
-			},
-		},
+	// MAVLINK SETUP
+	fcPort := config.FCPort
+	fcBaud := config.FCBaud
+	if fcPort == "" {
+		fcPort = "auto"
+	}
+	if fcBaud == 0 {
+		fcBaud = 57600
+	}
+
+	var node *gomavlib.Node
+	var err error
+
+	var endpoints []gomavlib.EndpointConf
+
+	if fcPort == "auto" {
+		log.Println("[Hardware] Auto-Detecting Flight Controller...")
+		// 1. Search for Serial Ports
+		files, _ := os.ReadDir("/dev")
+		var foundPort string
+		for _, f := range files {
+			if strings.HasPrefix(f.Name(), "ttyACM") || strings.HasPrefix(f.Name(), "ttyUSB") {
+				foundPort = "/dev/" + f.Name()
+				break
+			}
+		}
+
+		if foundPort != "" {
+			log.Printf("[Hardware] ✅ Found Physical Device: %s", foundPort)
+			fcPort = foundPort
+			endpoints = []gomavlib.EndpointConf{
+				gomavlib.EndpointSerial{Device: foundPort, Baud: fcBaud},
+			}
+		} else {
+			log.Println("[Hardware] ⚠️ No Physical Device Found. Switching to SITL Mode (UDP :14550)...")
+			endpoints = []gomavlib.EndpointConf{
+				gomavlib.EndpointUDPServer{Address: ":14550"},
+			}
+		}
+	} else {
+		// Manual Configuration
+		log.Printf("[Hardware] Connecting to configured port: %s", fcPort)
+		if strings.HasPrefix(fcPort, "tcp:") {
+			address := strings.TrimPrefix(fcPort, "tcp:")
+			endpoints = []gomavlib.EndpointConf{gomavlib.EndpointTCPClient{Address: address}}
+		} else if strings.HasPrefix(fcPort, "udp:") {
+			address := strings.TrimPrefix(fcPort, "udp:")
+			endpoints = []gomavlib.EndpointConf{gomavlib.EndpointUDPClient{Address: address}}
+		} else {
+			endpoints = []gomavlib.EndpointConf{
+				gomavlib.EndpointSerial{Device: fcPort, Baud: fcBaud},
+			}
+		}
+	}
+
+	node, err = gomavlib.NewNode(gomavlib.NodeConf{
+		Endpoints:   endpoints,
 		Dialect:     common.Dialect,
 		OutVersion:  gomavlib.V2,
 		OutSystemID: 10,
 	})
 
-	// Fallback to UDP if Serial fails
 	if err != nil {
-		log.Printf("[Hardware] No designated serial ports found.")
-		log.Println("[MAVLink] ⚠️ No Serial Port Found. Running in Simulator Mode (UDP Only).")
-		node, err = gomavlib.NewNode(gomavlib.NodeConf{
-			Endpoints: []gomavlib.EndpointConf{
-				gomavlib.EndpointUDPClient{Address: "127.0.0.1:14550"}, // Mavproxy sim
-			},
-			Dialect:    common.Dialect,
-			OutVersion: gomavlib.V2,
-		})
-		if err != nil {
-			log.Printf("[MAVLink] Failed to start even UDP: %v", err)
-		}
-	}
-
-	if node != nil {
+		log.Printf("[MAVLink] Connection Failed: %v", err)
+	} else {
 		defer node.Close()
-		log.Println("MAVLink Listener Started on :14550")
+		log.Printf("[MAVLink] Link Active")
 	}
 
 	ticker := time.NewTicker(300 * time.Millisecond) // 3Hz Telemetry
@@ -516,12 +571,11 @@ func telemetryAndClaimLoop(client *BackendClient) {
 	claimTicker := time.NewTicker(5 * time.Second)
 	defer claimTicker.Stop()
 
-	// Local Telemetry State
-	var telemLat, telemLon float64
-	var telemAlt float32
-	var telemHdg uint8
-	// var telemSat uint8 // Unused
-	var telemSpeed, telemBatt float32 // Speed, Battery
+	// Local Telemetry State (Raw MAVLink Units)
+	var telemLat, telemLon int32
+	var telemAlt int32                           // mm
+	var telemHdg uint16                          // cdeg
+	var telemSpeed, telemBatt, telemVolt float32 // Speed m/s, Battery %, Voltage V
 	var telemMode string = "Standby"
 
 	var telemLastHeartbeat int64
@@ -544,14 +598,19 @@ func telemetryAndClaimLoop(client *BackendClient) {
 						}
 						// Global Position
 						if msg, ok := frm.Message().(*common.MessageGlobalPositionInt); ok {
-							telemLat = float64(msg.Lat) / 1e7
-							telemLon = float64(msg.Lon) / 1e7
-							telemAlt = float32(msg.Alt) / 1000.0 // mm to m
-							telemHdg = uint8(msg.Hdg / 100)
+							telemLat = msg.Lat
+							telemLon = msg.Lon
+							telemAlt = msg.Alt
+							telemHdg = msg.Hdg
 						}
 						// Sys Status (Battery)
 						if msg, ok := frm.Message().(*common.MessageSysStatus); ok {
 							telemBatt = float32(msg.BatteryRemaining)
+							telemVolt = float32(msg.VoltageBattery) / 1000.0 // mV to V
+							// Debug Log
+							if telemVolt > 0 {
+								// log.Printf("🔋 Battery: %d%%, Voltage: %.2fV", msg.BatteryRemaining, telemVolt)
+							}
 						}
 						// VFR HUD (Speed)
 						if msg, ok := frm.Message().(*common.MessageVfrHud); ok {
@@ -576,35 +635,31 @@ func telemetryAndClaimLoop(client *BackendClient) {
 						Lat: telemLat,
 						Lon: telemLon,
 						Alt: telemAlt,
-						Hdg: uint16(telemHdg),
+						Hdg: telemHdg,
 					},
 					SysStatus: &SysStatus{
 						BatteryRemaining: int(telemBatt),
-						Voltage:          12.0, // Mock
+						Voltage:          telemVolt,
 					},
 					Mode:  telemMode,
 					Armed: false, // Todo read heartbeat custom mode
 				}
 
 				data, _ := json.Marshal(LiveKitDataMessage{
-					Type:    "telemetry",
-					Payload: payload,
+					Type: "telemetry",
+					Data: payload,
 				})
 
 				if err := activeRoom.LocalParticipant.PublishData(data, lksdk.WithDataPublishReliable(true), lksdk.WithDataPublishTopic("telemetry")); err != nil {
 					// log.Printf("Failed to publish data: %v", err)
 					// Keep quiet on high freq errors
 				}
-
-				// ALSO SEND TO BACKEND?
-				// For "Map Last Known Location"
-				// Let's do it every 10s via HTTP to save bandwidth? Or just rely on ClaimTicker?
 			}
 
 		case <-claimTicker.C:
 			// Check Connection Health
 			// Ping /telemetry endpoint to update "Last Seen"
-			client.UpdateTelemetry(telemLat, telemLon, float64(telemAlt), float64(telemSpeed), float64(telemHdg), 100, int(telemBatt))
+			client.UpdateTelemetry(float64(telemLat)/1e7, float64(telemLon)/1e7, float64(telemAlt)/1000.0, float64(telemSpeed), float64(telemHdg), 100, int(telemBatt))
 
 			isClaimed, isServerClaimed := client.CheckClaim()
 
@@ -735,13 +790,6 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// --- CAMERA & LIVEKIT HELPERS (Keep existing) ---
-// Note: I'm omitting the exact copy of startCamera and connectToLiveKit to save space
-// but in real file they must exist.
-// I will assume they are preserved or I should write them if I'm overwriting the whole file.
-// Since I used "write_to_file" I MUST include them.
-// Let me quickly paste them from memory/context since they were in previous file views.
-
 func startCamera(ctx context.Context, res string) {
 	// 1. Check if rpicam-vid exists
 	rpiPath, err := exec.LookPath("rpicam-vid")
@@ -749,59 +797,115 @@ func startCamera(ctx context.Context, res string) {
 	useLibCamera := (err == nil)
 	// useLibCamera := false // Force V4L2 for testing on desktop
 
-	var cmd *exec.Cmd
+	// Crash Counter
+	crashCount := 0
+	lastCrashTime := time.Now()
+	forceTestPattern := false
 
-	// Resolution Parsing (Simple)
-	width := "640"
-	height := "480"
-	if res == "1280x720" {
-		width = "1280"
-		height = "720"
+	for {
+		// Check for Context Cancel
+		select {
+		case <-ctx.Done():
+			log.Println("[Camera] Supervisor stopping...")
+			return
+		default:
+		}
+
+		var cmd *exec.Cmd
+		// Resolution Parsing
+		width := "640"
+		height := "480"
+		if res == "1280x720" {
+			width = "1280"
+			height = "720"
+		}
+
+		// determine mode
+		useRealCamera := !forceTestPattern
+
+		// If using libcamera
+		if useRealCamera && useLibCamera {
+			log.Println("[Camera] Using rpicam-vid (Libcamera)...")
+			cmd = exec.CommandContext(ctx, "sh", "-c", fmt.Sprintf(
+				"rpicam-vid -t 0 --inline --width %s --height %s --framerate 30 --codec libav --libav-format yuv420p -o - | "+
+					"gst-launch-1.0 fdsrc ! videoparse width=%s height=%s framerate=30/1 format=i420 ! "+
+					"tee name=t ! queue max-size-buffers=1 leaky=downstream ! vp8enc deadline=1 ! avmux_ivf ! tcpserversink host=127.0.0.1 port=5600 sync=false "+
+					"t. ! queue ! videoscale ! video/x-raw,width=320,height=240 ! jpegenc ! multipartmux boundary=vyomboundary ! tcpserversink host=0.0.0.0 port=8081",
+				width, height, width, height,
+			))
+		} else if useRealCamera {
+			// Auto-Detect V4L2
+			videoDevice := "/dev/video0"
+			if _, err := os.Stat(videoDevice); err == nil {
+				log.Printf("[Camera] Found physical camera at %s", videoDevice)
+				fullCmd := fmt.Sprintf(
+					"gst-launch-1.0 v4l2src device=%s ! videoconvert ! video/x-raw,format=I420,width=%s,height=%s,framerate=30/1 ! "+
+						"tee name=t ! queue max-size-buffers=4 leaky=downstream ! vp8enc error-resilient=1 deadline=1 keyframe-max-dist=30 cpu-used=5 ! \"video/x-vp8\" ! queue ! avmux_ivf ! tcpserversink host=127.0.0.1 port=5600 sync=false "+
+						"t. ! queue max-size-buffers=4 leaky=downstream ! videoscale ! \"video/x-raw,width=320,height=240\" ! jpegenc ! multipartmux boundary=vyomboundary ! tcpserversink host=127.0.0.1 port=8081 sync=false",
+					videoDevice, width, height,
+				)
+				log.Println("[Camera] Starting Pipeline Step: " + fullCmd)
+				cmd = exec.Command("sh", "-c", fullCmd)
+				cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			} else {
+				log.Println("[Camera] No physical camera found. Using Test Source (Snow)...")
+				// Fallback to snow immediately if no device
+				forceTestPattern = true
+				continue // Restart loop to hit the else block below (or handle here, but cleaner to restart)
+			}
+		}
+
+		// If we decided to use test pattern (or fallback triggered)
+		if forceTestPattern {
+			log.Println("[Camera] Using Test Source (Snow)...")
+			fullCmd := fmt.Sprintf(
+				"gst-launch-1.0 videotestsrc is-live=true pattern=snow ! videoconvert ! video/x-raw,format=I420,width=%s,height=%s,framerate=30/1 ! "+
+					"tee name=t ! queue max-size-buffers=4 leaky=downstream ! vp8enc error-resilient=1 deadline=1 keyframe-max-dist=30 cpu-used=5 ! \"video/x-vp8\" ! queue ! avmux_ivf ! tcpserversink host=127.0.0.1 port=5600 sync=false "+
+					"t. ! queue max-size-buffers=4 leaky=downstream ! videoscale ! \"video/x-raw,width=320,height=240\" ! jpegenc ! multipartmux boundary=vyomboundary ! tcpserversink host=127.0.0.1 port=8081 sync=false",
+				width, height,
+			)
+			log.Println("[Camera] Starting Pipeline Step: " + fullCmd)
+			cmd = exec.Command("sh", "-c", fullCmd)
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		}
+
+		// Start Process
+		if err := cmd.Start(); err != nil {
+			log.Printf("[Camera] Failed to start pipeline: %v. Retrying in 2s...", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		log.Printf("[Camera] ✅ Pipeline started with PID %d", cmd.Process.Pid)
+
+		// Wait for Process to Exit (Blocking)
+		err := cmd.Wait()
+
+		// If we are here, process exited.
+		log.Printf("[Camera] ⚠️ Pipeline Exited: %v", err)
+
+		// Check for Context Cancel (Clean Shutdown)
+		select {
+		case <-ctx.Done():
+			return // Normal exit
+		default:
+		}
+
+		// Crash Logic
+		if time.Since(lastCrashTime) < 30*time.Second {
+			crashCount++
+		} else {
+			crashCount = 1 // Reset
+		}
+		lastCrashTime = time.Now()
+
+		if crashCount >= 3 && !forceTestPattern {
+			log.Println("[Camera] 🚨 Too many crashes! Falling back to Test Pattern (Snow) for stability.")
+			forceTestPattern = true
+		}
+
+		log.Println("[Camera] Restarting pipeline in 2 seconds...")
+		time.Sleep(2 * time.Second)
 	}
-
-	if useLibCamera {
-		log.Println("[Camera] Using rpicam-vid (Libcamera)...")
-		// rpicam-vid -t 0 --inline --width 640 --height 480 --framerate 30 --codec libav --libav-format yuv420p -o - | gst-launch...
-		// Complex pipeline. Let's use standard V4L2 fallback for now which works everywhere.
-		// Or try simple rpicam pipeline.
-		cmd = exec.CommandContext(ctx, "sh", "-c", fmt.Sprintf(
-			"rpicam-vid -t 0 --inline --width %s --height %s --framerate 30 --codec libav --libav-format yuv420p -o - | "+
-				"gst-launch-1.0 fdsrc ! videoparse width=%s height=%s framerate=30/1 format=i420 ! "+
-				"tee name=t ! queue ! vp8enc deadline=1 ! filesink location=camera_pipe.ivf "+
-				"t. ! queue ! videoscale ! video/x-raw,width=320,height=240 ! jpegenc ! multipartmux boundary=vyomboundary ! tcpserversink host=0.0.0.0 port=8081",
-			width, height, width, height,
-		))
-	} else {
-		log.Println("[Camera] rpicam-vid not found. Falling back to V4L2 (USB/Virtual Camera)...")
-		// V4L2 Pipeline
-		fullCmd := fmt.Sprintf(
-			"gst-launch-1.0 v4l2src device=/dev/video0 ! videoconvert ! video/x-raw,format=I420,width=%s,height=%s,framerate=30/1 ! "+
-				"tee name=t ! queue max-size-buffers=4 leaky=downstream ! vp8enc error-resilient=1 deadline=1 keyframe-max-dist=30 cpu-used=5 ! \"video/x-vp8\" ! queue ! avmux_ivf ! filesink location=camera_pipe.ivf sync=false async=false "+
-				"t. ! queue max-size-buffers=4 leaky=downstream ! videoscale ! \"video/x-raw,width=320,height=240\" ! jpegenc ! multipartmux boundary=vyomboundary ! tcpserversink host=127.0.0.1 port=8081 sync=false",
-			width, height,
-		)
-		log.Println("[Camera] Starting Pipeline Step: " + fullCmd)
-		cmd = exec.Command("sh", "-c", fullCmd)
-		// Set Process Group ID to kill children later
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	}
-
-	if err := cmd.Start(); err != nil {
-		log.Printf("[Camera] Failed to start pipeline: %v", err)
-		return
-	}
-	log.Printf("[Camera] ✅ Pipeline started with PID %d", cmd.Process.Pid)
-
-	// Wait for context cancel
-	<-ctx.Done()
-	log.Println("[Camera] Context Cancelled. Killing GStreamer Process Group...")
-
-	// Kill Process Group
-	syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-
-	// Wait for exit
-	cmd.Wait()
-	log.Println("Camera stopped intentionally (Context Cancelled).")
 }
 
 func connectToLiveKit(roomName string, client *BackendClient) {
@@ -819,6 +923,35 @@ func connectToLiveKit(roomName string, client *BackendClient) {
 		log.Printf("[LiveKit] Token Error: %v", err)
 		return
 	}
+	if token.LiveKitURL == "" {
+		log.Println("[LiveKit] ❌ Critical: LiveKit URL is missing in backend response. Config required in Dashboard.")
+		// STRICT MODE: Do not fallback. Let the loop retry later.
+		return
+	}
+
+	// --- ZeroTier Integration ---
+	// Attempt to pull ZeroTier config and join network
+	ztConfig, err := client.GetZeroTierConfig(client.Identity.DeviceID)
+	if err != nil {
+		log.Printf("[ZeroTier] Failed to get config: %v", err)
+	} else if ztConfig != nil && ztConfig.NetworkID != "" {
+		log.Printf("[ZeroTier] Found Network ID: %s. Ensuring membership...", ztConfig.NetworkID)
+
+		// Check current networks
+		out, _ := exec.Command("zerotier-cli", "listnetworks").Output()
+		if !strings.Contains(string(out), ztConfig.NetworkID) {
+			log.Printf("[ZeroTier] Joining network %s...", ztConfig.NetworkID)
+			if err := exec.Command("zerotier-cli", "join", ztConfig.NetworkID).Run(); err != nil {
+				log.Printf("[ZeroTier] ❌ Join Failed: %v", err)
+			} else {
+				log.Println("[ZeroTier] ✅ Join command executed.")
+			}
+		} else {
+			log.Println("[ZeroTier] Already joined network.")
+		}
+	} else {
+		log.Println("[ZeroTier] No Network ID configured in Backend.")
+	}
 
 	// Connect
 	cb := lksdk.NewRoomCallback()
@@ -828,28 +961,23 @@ func connectToLiveKit(roomName string, client *BackendClient) {
 	// Handle Video Publishing
 	// We read from pipe `camera_pipe.ivf`
 
-	room, err := lksdk.ConnectToRoom(
-		"https://vyom-gcs-l8j4l1d6.livekit.cloud", // TODO: Fetch from Config/API
-		lksdk.ConnectInfo{
-			APIKey:    "APIzw5qDFQ2b4wk",
-			APISecret: "gJ02gCg246FjK3jF6W0t5f3YtXlCjC2rJ7jC5gXj6G", // WARN: Hardcoded, should assume token covers it? SDK ConnectToRoom needs Token.
-			// Wait, ConnectToRoomWithToken takes the token.
-			RoomName:            roomName,
-			ParticipantIdentity: roomName,
-		},
-		cb,
-	)
-	// We use room2 via JoinWithToken, so close this one or ignore.
-	// Actually ConnectToRoom connects.
-	// But we prefer token-based join.
-	// room variable is unused because we use room2.
-	// If ConnectToRoom connects, we might have two connections?
-	// For now, silencing unused var.
-	_ = room
+	// Handle Video Publishing
+	// We read from pipe `camera_pipe.ivf`
 
-	// Actually using NewRoom + JoinWithToken is better
+	// We used to do NewRoom + JoinWithToken but ConnectToRoom is easier if URL is dynamic.
+	// However, ConnectToRoom might require APIKey/Secret if Token is not enough... wait.
+	// We use JoinWithToken below.
+
+	// We used to do NewRoom + JoinWithToken but ConnectToRoom is easier if URL is dynamic.
+	// However, ConnectToRoom might require APIKey/Secret if Token is not enough... wait.
+	// lksdk.ConnectToRoomWithToken is better?
+	// Let's check sdk...
+	// If ConnectToRoom uses callback and options...
+	// Options can take Token? No.
+	// Let's use JoinWithToken on a NewRoom to be safe and explicit.
+
 	room2 := lksdk.NewRoom(cb)
-	if err := room2.JoinWithToken("https://vyom-gcs-l8j4l1d6.livekit.cloud", token.Token); err != nil {
+	if err := room2.JoinWithToken(token.LiveKitURL, token.Token); err != nil {
 		log.Printf("[LiveKit] Join Failed: %v", err)
 		return
 	}
@@ -857,61 +985,76 @@ func connectToLiveKit(roomName string, client *BackendClient) {
 	activeRoom = room2
 
 	// Start Video Ingoroutine
+	log.Printf("[Loop] Connected Identity: %s", room2.LocalParticipant.Identity())
 	go publishVideoToRoom(room2)
 }
 
 func publishVideoToRoom(room *lksdk.Room) {
-	// Check pipe existence
-	// Wait for pipe to be created by GStreamer
-	time.Sleep(2 * time.Second)
-
-	file, err := os.Open("camera_pipe.ivf")
-	if err != nil {
-		log.Printf("[Video] Failed to open pipe: %v", err)
-		return
-	}
-
 	// Create Track
-	track, err := lksdk.NewLocalSampleTrack(webrtc.RTPCodecCapability{
-		MimeType: webrtc.MimeTypeVP8,
-	})
-	if err != nil {
-		return
-	}
+	var track *lksdk.LocalSampleTrack
+	var err error
 
-	if _, err := room.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{
-		Name:   "camera_feed",
-		Source: livekit.TrackSource_CAMERA,
-	}); err != nil {
-		log.Printf("Failed to publish track: %v", err)
-		return
-	}
-
-	// Reader Loop
-	ivf, header, err := ivfreader.NewWith(file)
-	_ = header // Silence unused
-	if err != nil {
-		return
-	}
-
-	log.Println("[Video] Publishing frames...")
+	// Retry loop for Publishing Track
 	for {
-		frame, _, err := ivf.ParseNextFrame()
+		track, err = lksdk.NewLocalSampleTrack(webrtc.RTPCodecCapability{
+			MimeType: webrtc.MimeTypeVP8,
+		})
 		if err != nil {
-			if err == io.EOF {
-				// Pipe closed?
-				time.Sleep(100 * time.Millisecond)
-				continue
-			}
-			break
+			log.Printf("[LiveKit] Failed to create track: %v. Retrying in 5s...", err)
+			time.Sleep(5 * time.Second)
+			continue
 		}
-		// Send
-		sample := media.Sample{Data: frame, Duration: time.Second / 30} // Approx
-		track.WriteSample(sample, nil)
 
-		// Real timing?
-		// Header has timebase. frame has timestamp.
-		// Simplify:
-		time.Sleep(time.Millisecond * 30)
+		if _, err := room.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{
+			Name:        "camera_feed",
+			Source:      livekit.TrackSource_CAMERA,
+			VideoWidth:  640,
+			VideoHeight: 480,
+		}); err != nil {
+			log.Printf("[LiveKit] Failed to publish track: %v. Retrying in 5s...", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		// Success
+		break
+	}
+
+	log.Println("[Video] Uplink Ready. Connecting to Local Camera Stream (TCP 5600)...")
+
+	// Retry loop for connecting to GStreamer TCP Server
+	for {
+		conn, err := net.Dial("tcp", "127.0.0.1:5600")
+		if err != nil {
+			// Stream not ready yet, just wait and retry
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		log.Println("[Video] Connected to Camera Stream!")
+
+		// Reader Loop
+		ivf, header, err := ivfreader.NewWith(conn)
+		_ = header // Silence unused
+		if err != nil {
+			conn.Close()
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		for {
+			frame, _, err := ivf.ParseNextFrame()
+			if err != nil {
+				// Connection close or stream restart
+				break
+			}
+			// Send
+			sample := media.Sample{Data: frame, Duration: time.Second / 30} // Approx
+			track.WriteSample(sample, nil)
+		}
+
+		conn.Close()
+		log.Println("[Video] Stream disconnected. Reconnecting...")
+		time.Sleep(1 * time.Second)
 	}
 }
