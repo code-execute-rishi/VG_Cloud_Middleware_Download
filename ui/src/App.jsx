@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import "./App.css";
-import QRCode from "react-qr-code";
+// import QRCode from "react-qr-code"; // Removed for v3
 import MJPEGStream from './components/MJPEGStream';
 import SystemHealth from './components/SystemHealth';
 
@@ -126,21 +126,41 @@ function App() {
         <main className="main-content">
           <div className="card bind-card">
             <h2>Connect Device</h2>
-            <p>Scan to link this device to your account</p>
+            <p>Link this device to your VG Cloud account</p>
 
-            <div style={{ background: 'white', padding: '16px', borderRadius: '8px', margin: '20px 0' }}>
-              {status?.auth_status?.verification_uri ? (
-                <QRCode value={status.auth_status.verification_uri} size={180} />
+            <div style={{ background: 'white', padding: '40px', borderRadius: '8px', margin: '20px 0', textAlign: 'center' }}>
+              {status?.auth_status?.connect_url ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px' }}>
+                  <div className="pulse-ring" style={{ width: '80px', height: '80px', background: '#e0f2fe', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#0284c7', fontSize: '2rem' }}>
+                    🔗
+                  </div>
+
+                  <a
+                    href={status.auth_status.connect_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="btn-primary"
+                    style={{
+                      textDecoration: 'none',
+                      fontSize: '1.2rem',
+                      padding: '16px 32px',
+                      background: 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)',
+                      boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)'
+                    }}
+                  >
+                    🚀 Connect Device
+                  </a>
+
+                  <p style={{ fontSize: '0.9rem', color: '#64748b', maxWidth: '300px', lineHeight: '1.5' }}>
+                    Clicking this will open the VG Cloud dashboard to authorize this device.
+                  </p>
+                </div>
               ) : (
-                <div className="spinner"></div>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                  <div className="spinner"></div>
+                  <p style={{ marginTop: '10px', color: '#666' }}>Fetching Setup URL...</p>
+                </div>
               )}
-            </div>
-
-            <div style={{ marginBottom: '20px' }}>
-              <p style={{ marginBottom: '5px', color: 'var(--text-sub)' }}>Or enter code at <b>{status?.auth_status?.verification_uri?.split('?')[0]}</b></p>
-              <h1 style={{ fontSize: '2.5rem', margin: '5px 0', letterSpacing: '2px' }}>
-                {status?.auth_status?.user_code || "Loading..."}
-              </h1>
             </div>
 
             <hr style={{ width: '100%', borderColor: '#eee', margin: '20px 0' }} />
