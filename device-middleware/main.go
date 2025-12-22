@@ -109,14 +109,35 @@ type CameraConfig struct {
 
 // Telemetry & LiveKit Structs (Same as before)
 type LiveKitTelemetry struct {
-	Timestamp         int64           `json:"timestamp"`
-	Attitude          *Attitude       `json:"attitude,omitempty"`
-	SysStatus         *SysStatus      `json:"sys_status,omitempty"`
-	GlobalPositionInt *GlobalPosition `json:"global_position_int,omitempty"`
-	Mode              string          `json:"mode,omitempty"`
-	Armed             bool            `json:"armed"`
-	GpsRawInt         *GpsRaw         `json:"gps_raw_int,omitempty"`
-	VfrHud            *VfrHud         `json:"vfr_hud,omitempty"`
+	Timestamp           int64                `json:"timestamp"`
+	Attitude            *Attitude            `json:"attitude,omitempty"`
+	SysStatus           *SysStatus           `json:"sys_status,omitempty"`
+	GlobalPositionInt   *GlobalPosition      `json:"global_position_int,omitempty"`
+	Mode                string               `json:"mode,omitempty"`
+	Armed               bool                 `json:"armed"`
+	GpsRawInt           *GpsRaw              `json:"gps_raw_int,omitempty"`
+	VfrHud              *VfrHud              `json:"vfr_hud,omitempty"`
+	NavControllerOutput *NavControllerOutput `json:"nav_controller_output,omitempty"`
+	MissionCurrent      *MissionCurrent      `json:"mission_current,omitempty"`
+	HomePosition        *HomePosition        `json:"home_position,omitempty"`
+}
+type NavControllerOutput struct {
+	NavRoll       float32 `json:"nav_roll"`
+	NavPitch      float32 `json:"nav_pitch"`
+	NavBearing    int16   `json:"nav_bearing"`
+	TargetBearing int16   `json:"target_bearing"`
+	WpDist        uint16  `json:"wp_dist"`
+	AltError      float32 `json:"alt_error"`
+	AspdError     float32 `json:"aspd_error"`
+	XtrackError   float32 `json:"xtrack_error"`
+}
+type MissionCurrent struct {
+	Seq uint16 `json:"seq"`
+}
+type HomePosition struct {
+	Lat int32 `json:"lat"`
+	Lon int32 `json:"lon"`
+	Alt int32 `json:"alt"`
 }
 type VfrHud struct {
 	Airspeed    float32 `json:"airspeed"`
@@ -200,9 +221,8 @@ type LKTokenResponse struct {
 
 // --- Global State ---
 var (
-	cameraResolution = "640x480"
-	cameraMutex      sync.Mutex
-	cameraCancel     context.CancelFunc
+	cameraMutex  sync.Mutex
+	cameraCancel context.CancelFunc
 
 	// Thread-safe Status
 	deviceStatus      GlobalDeviceStatus
@@ -499,7 +519,7 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cameraMutex.Lock()
 	cameraCancel = cancel
-	cameraResolution = res // Update Global
+	// cameraResolution = res // Updated Global (Removed unused)
 	cameraMutex.Unlock()
 
 	go startCamera(ctx, res)
@@ -600,6 +620,9 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 	var telemMode string = "Standby"
 	var telemVfrHud VfrHud
 	var telemGpsRaw GpsRaw
+	var telemNavOutput NavControllerOutput
+	var telemMissionCurrent MissionCurrent
+	var telemHome HomePosition
 
 	var telemLastHeartbeat int64
 
@@ -663,6 +686,41 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 							}
 							telemMutex.Unlock()
 						}
+						// NAV CONTROLLER OUTPUT (Wp Dist, etc)
+						if msg, ok := frm.Message().(*common.MessageNavControllerOutput); ok {
+							telemMutex.Lock()
+							telemNavOutput = NavControllerOutput{
+								NavRoll:       msg.NavRoll,
+								NavPitch:      msg.NavPitch,
+								NavBearing:    msg.NavBearing,
+								TargetBearing: msg.TargetBearing,
+								WpDist:        msg.WpDist,
+								AltError:      msg.AltError,
+								AspdError:     msg.AspdError,
+								XtrackError:   msg.XtrackError,
+							}
+							telemMutex.Unlock()
+						}
+						// MISSION CURRENT (Seq)
+						if msg, ok := frm.Message().(*common.MessageMissionCurrent); ok {
+							telemMutex.Lock()
+							telemMissionCurrent = MissionCurrent{
+								Seq: msg.Seq,
+							}
+							telemMutex.Unlock()
+							log.Printf("📍 Mission Current: %d", msg.Seq)
+						}
+						// HOME POSITION
+						if msg, ok := frm.Message().(*common.MessageHomePosition); ok {
+							telemMutex.Lock()
+							telemHome = HomePosition{
+								Lat: msg.Latitude,
+								Lon: msg.Longitude,
+								Alt: msg.Altitude,
+							}
+							telemMutex.Unlock()
+							log.Printf("🏠 Home Position Recv: Lat=%d Lon=%d", msg.Latitude, msg.Longitude)
+						}
 					}
 				}
 			}
@@ -689,10 +747,13 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 						BatteryRemaining: int(telemBatt),
 						Voltage:          telemVolt,
 					},
-					VfrHud:    &telemVfrHud,
-					GpsRawInt: &telemGpsRaw,
-					Mode:      telemMode,
-					Armed:     false, // Todo read heartbeat custom mode
+					VfrHud:              &telemVfrHud,
+					GpsRawInt:           &telemGpsRaw,
+					Mode:                telemMode,
+					Armed:               false, // Todo read heartbeat custom mode
+					NavControllerOutput: &telemNavOutput,
+					MissionCurrent:      &telemMissionCurrent,
+					HomePosition:        &telemHome,
 				}
 				telemMutex.RUnlock()
 
