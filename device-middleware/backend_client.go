@@ -215,6 +215,23 @@ func (c *BackendClient) CheckLiveness() error {
 	return nil
 }
 
+// --- ZeroTier ---
+
+type ZerotierConfigResponse struct {
+	ZerotierIP string `json:"zerotier_ip"`
+	NetworkID  string `json:"network_id"`
+	SSHCommand string `json:"ssh_command"`
+}
+
+func (c *BackendClient) GetZeroTierConfig(deviceID string) (*ZerotierConfigResponse, error) {
+	url := fmt.Sprintf("/api/v1/devices/%s/zerotier", deviceID)
+	var res ZerotierConfigResponse
+	if err := c.get(url, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
 // --- Helper ---
 
 func (c *BackendClient) post(path string, payload interface{}, target interface{}) error {
@@ -232,10 +249,26 @@ func (c *BackendClient) post(path string, payload interface{}, target interface{
 	if err != nil {
 		return err
 	}
+	return c.doRequest(req, target)
+}
 
+func (c *BackendClient) get(path string, target interface{}) error {
+	url := c.BaseURL + path
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
+	return c.doRequest(req, target)
+}
+
+func (c *BackendClient) doRequest(req *http.Request, target interface{}) error {
 	req.Header.Set("Content-Type", "application/json")
-	if c.Identity != nil && c.Identity.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.Identity.Token)
+	if c.Identity != nil {
+		if c.Identity.AuthToken != "" {
+			req.Header.Set("Authorization", "Bearer "+c.Identity.AuthToken)
+		} else if c.Identity.Token != "" {
+			req.Header.Set("Authorization", "Bearer "+c.Identity.Token)
+		}
 	}
 
 	resp, err := c.HTTPClient.Do(req)
@@ -246,11 +279,8 @@ func (c *BackendClient) post(path string, payload interface{}, target interface{
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
-		// Check for specific error codes for Reset
-		if resp.StatusCode == 401 || resp.StatusCode == 404 {
-			if strings.Contains(string(respBody), "not found") || strings.Contains(string(respBody), "Unauthorized") {
-				// Double check if payload implies "Forgotten"
-				// For v3, 401 on Bearer Token usually means revoked/expired.
+		if resp.StatusCode == 401 { // Check for forgotten
+			if strings.Contains(string(respBody), "Unauthorized") {
 				return fmt.Errorf("DEVICE_FORGOTTEN")
 			}
 		}
