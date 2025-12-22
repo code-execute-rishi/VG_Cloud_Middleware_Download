@@ -4,6 +4,7 @@ go 1.25.4
 
 require (
 	github.com/bluenviron/gomavlib/v3 v3.3.0
+	github.com/livekit/protocol v1.43.4
 	github.com/livekit/server-sdk-go/v2 v2.12.8
 	github.com/pion/webrtc/v4 v4.1.6
 )
@@ -35,8 +36,7 @@ require (
 	github.com/lithammer/shortuuid/v4 v4.2.0 // indirect
 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731 // indirect
 	github.com/livekit/mediatransportutil v0.0.0-20250825135402-7bc31f107ade // indirect
-	github.com/livekit/protocol v1.42.3-0.20251023002554-070839e4cae7 // indirect
-	github.com/livekit/psrpc v0.7.0 // indirect
+	github.com/livekit/psrpc v0.7.1 // indirect
 	github.com/magefile/mage v1.15.0 // indirect
 	github.com/moby/sys/user v0.4.0 // indirect
 	github.com/nats-io/nats.go v1.47.0 // indirect
@@ -69,13 +69,13 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
 	go.uber.org/zap/exp v0.3.0 // indirect
-	golang.org/x/crypto v0.43.0 // indirect
+	golang.org/x/crypto v0.45.0 // indirect
 	golang.org/x/exp v0.0.0-20251009144603-d2f985daa21b // indirect
 	golang.org/x/mod v0.29.0 // indirect
-	golang.org/x/net v0.46.0 // indirect
-	golang.org/x/sync v0.17.0 // indirect
-	golang.org/x/sys v0.37.0 // indirect
-	golang.org/x/text v0.30.0 // indirect
+	golang.org/x/net v0.47.0 // indirect
+	golang.org/x/sync v0.18.0 // indirect
+	golang.org/x/sys v0.38.0 // indirect
+	golang.org/x/text v0.31.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20251014184007-4626949a642f // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251014184007-4626949a642f // indirect
 	google.golang.org/grpc v1.76.0 // indirect
