@@ -116,6 +116,15 @@ type LiveKitTelemetry struct {
 	Mode              string          `json:"mode,omitempty"`
 	Armed             bool            `json:"armed"`
 	GpsRawInt         *GpsRaw         `json:"gps_raw_int,omitempty"`
+	VfrHud            *VfrHud         `json:"vfr_hud,omitempty"`
+}
+type VfrHud struct {
+	Airspeed    float32 `json:"airspeed"`
+	Groundspeed float32 `json:"groundspeed"`
+	Heading     int16   `json:"heading"`
+	Throttle    uint16  `json:"throttle"`
+	Alt         float32 `json:"alt"`
+	Climb       float32 `json:"climb"`
 }
 type Attitude struct {
 	Roll  float32 `json:"roll"`
@@ -589,6 +598,8 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 	var telemHdg uint16                          // cdeg
 	var telemSpeed, telemBatt, telemVolt float32 // Speed m/s, Battery %, Voltage V
 	var telemMode string = "Standby"
+	var telemVfrHud VfrHud
+	var telemGpsRaw GpsRaw
 
 	var telemLastHeartbeat int64
 
@@ -632,8 +643,25 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 						if msg, ok := frm.Message().(*common.MessageVfrHud); ok {
 							telemMutex.Lock()
 							telemSpeed = float32(msg.Groundspeed)
+							telemVfrHud = VfrHud{
+								Airspeed:    msg.Airspeed,
+								Groundspeed: msg.Groundspeed,
+								Heading:     msg.Heading,
+								Throttle:    msg.Throttle,
+								Alt:         msg.Alt,
+								Climb:       msg.Climb,
+							}
 							telemMutex.Unlock()
 							// log.Printf("🚀 Speed: %.2f m/s", telemSpeed)
+						}
+						// GPS RAW INT (Satellites)
+						if msg, ok := frm.Message().(*common.MessageGpsRawInt); ok {
+							telemMutex.Lock()
+							telemGpsRaw = GpsRaw{
+								FixType:    uint8(msg.FixType),
+								Satellites: msg.SatellitesVisible,
+							}
+							telemMutex.Unlock()
 						}
 					}
 				}
@@ -661,8 +689,10 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 						BatteryRemaining: int(telemBatt),
 						Voltage:          telemVolt,
 					},
-					Mode:  telemMode,
-					Armed: false, // Todo read heartbeat custom mode
+					VfrHud:    &telemVfrHud,
+					GpsRawInt: &telemGpsRaw,
+					Mode:      telemMode,
+					Armed:     false, // Todo read heartbeat custom mode
 				}
 				telemMutex.RUnlock()
 
