@@ -829,7 +829,7 @@ func startCamera(ctx context.Context, res string) {
 			cmd = exec.CommandContext(ctx, "sh", "-c", fmt.Sprintf(
 				"rpicam-vid -t 0 --inline --width %s --height %s --framerate 30 --codec libav --libav-format yuv420p -o - | "+
 					"gst-launch-1.0 fdsrc ! videoparse width=%s height=%s framerate=30/1 format=i420 ! "+
-					"tee name=t ! queue max-size-buffers=1 leaky=downstream ! vp8enc deadline=1 ! avmux_ivf ! tcpserversink host=127.0.0.1 port=5600 sync=false "+
+					"tee name=t ! queue max-size-buffers=1 leaky=downstream ! vp8enc deadline=1 ! avmux_ivf ! tcpclientsink host=127.0.0.1 port=5600 "+
 					"t. ! queue ! videoscale ! video/x-raw,width=320,height=240 ! jpegenc ! multipartmux boundary=vyomboundary ! tcpserversink host=0.0.0.0 port=8081",
 				width, height, width, height,
 			))
@@ -840,7 +840,7 @@ func startCamera(ctx context.Context, res string) {
 				log.Printf("[Camera] Found physical camera at %s", videoDevice)
 				fullCmd := fmt.Sprintf(
 					"gst-launch-1.0 v4l2src device=%s ! videoconvert ! video/x-raw,format=I420,width=%s,height=%s,framerate=30/1 ! "+
-						"tee name=t ! queue max-size-buffers=4 leaky=downstream ! vp8enc error-resilient=1 deadline=1 keyframe-max-dist=30 cpu-used=5 ! \"video/x-vp8\" ! queue ! avmux_ivf ! tcpserversink host=127.0.0.1 port=5600 sync=false "+
+						"tee name=t ! queue max-size-buffers=4 leaky=downstream ! vp8enc error-resilient=1 deadline=1 keyframe-max-dist=30 cpu-used=5 ! \"video/x-vp8\" ! queue ! avmux_ivf ! tcpclientsink host=127.0.0.1 port=5600 "+
 						"t. ! queue max-size-buffers=4 leaky=downstream ! videoscale ! \"video/x-raw,width=320,height=240\" ! jpegenc ! multipartmux boundary=vyomboundary ! tcpserversink host=127.0.0.1 port=8081 sync=false",
 					videoDevice, width, height,
 				)
@@ -860,7 +860,7 @@ func startCamera(ctx context.Context, res string) {
 			log.Println("[Camera] Using Test Source (Snow)...")
 			fullCmd := fmt.Sprintf(
 				"gst-launch-1.0 videotestsrc is-live=true pattern=snow ! videoconvert ! video/x-raw,format=I420,width=%s,height=%s,framerate=30/1 ! "+
-					"tee name=t ! queue max-size-buffers=4 leaky=downstream ! vp8enc error-resilient=1 deadline=1 keyframe-max-dist=30 cpu-used=5 ! \"video/x-vp8\" ! queue ! avmux_ivf ! tcpserversink host=127.0.0.1 port=5600 sync=false "+
+					"tee name=t ! queue max-size-buffers=4 leaky=downstream ! vp8enc error-resilient=1 deadline=1 keyframe-max-dist=30 cpu-used=5 ! \"video/x-vp8\" ! queue ! avmux_ivf ! tcpclientsink host=127.0.0.1 port=5600 "+
 					"t. ! queue max-size-buffers=4 leaky=downstream ! videoscale ! \"video/x-raw,width=320,height=240\" ! jpegenc ! multipartmux boundary=vyomboundary ! tcpserversink host=127.0.0.1 port=8081 sync=false",
 				width, height,
 			)
@@ -1020,27 +1020,39 @@ func publishVideoToRoom(room *lksdk.Room) {
 		break
 	}
 
-	log.Println("[Video] Uplink Ready. Connecting to Local Camera Stream (TCP 5600)...")
+	log.Println("[Video] Uplink Ready. Listening for Camera Stream on TCP :5600...")
 
-	// Retry loop for connecting to GStreamer TCP Server
+	// Listen for GStreamer Connection (Server Mode)
+	ln, err := net.Listen("tcp", ":5600")
+	if err != nil {
+		log.Printf("[Video] ❌ Failed to bind port 5600: %v", err)
+		return
+	}
+	defer ln.Close()
+
+	// Accept Loop
 	for {
-		conn, err := net.Dial("tcp", "127.0.0.1:5600")
+		conn, err := ln.Accept()
 		if err != nil {
-			// Stream not ready yet, just wait and retry
+			log.Printf("[Video] Accept Error: %v", err)
 			time.Sleep(1 * time.Second)
 			continue
 		}
 
-		log.Println("[Video] Connected to Camera Stream!")
+		log.Println("[Video] 🎥 Camera Connected!")
 
 		// Reader Loop
+		// Note: GStreamer tcpclientsink should send the IVF Header immediately upon connection.
 		ivf, header, err := ivfreader.NewWith(conn)
 		_ = header // Silence unused
 		if err != nil {
+			log.Printf("[Video] ❌ Failed to read IVF Header: %v. Closing connection.", err)
 			conn.Close()
-			time.Sleep(1 * time.Second)
 			continue
 		}
+
+		log.Printf("[Video] ✅ Stream Header Received! %dx%d",
+			header.Width, header.Height)
 
 		for {
 			frame, _, err := ivf.ParseNextFrame()
@@ -1050,11 +1062,13 @@ func publishVideoToRoom(room *lksdk.Room) {
 			}
 			// Send
 			sample := media.Sample{Data: frame, Duration: time.Second / 30} // Approx
-			track.WriteSample(sample, nil)
+			if err := track.WriteSample(sample, nil); err != nil {
+				log.Printf("[Video] WriteSample Error: %v", err)
+				break
+			}
 		}
 
 		conn.Close()
-		log.Println("[Video] Stream disconnected. Reconnecting...")
-		time.Sleep(1 * time.Second)
+		log.Println("[Video] Camera Disconnected. Waiting for reconnection...")
 	}
 }
