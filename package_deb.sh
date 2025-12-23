@@ -2,7 +2,7 @@
 set -e
 
 APP_NAME="vyom-middleware"
-VERSION="2.4.8"
+VERSION="2.5.0"
 ARCH="arm64"
 PKG_DIR="deb_package"
 
@@ -20,23 +20,26 @@ mkdir -p $PKG_DIR/DEBIAN
 echo "🔨 Building Middleware Binary (ARM64)..."
 export GOOS=linux
 export GOARCH=arm64
+export CGO_ENABLED=0
 go build -o $PKG_DIR/usr/local/bin/$APP_NAME .
 
 # 3. Build UI (React)
 echo "⚛️  Building Local UI..."
 cd ui
-npm install
+if [ ! -d "node_modules" ]; then
+    npm install
+fi
 npm run build
 cd ..
 cp -r ui/dist/* $PKG_DIR/opt/vyom/ui/
 
 # 4. Config & Service Files
-echo "📄 Copying Service File..."
+echo "�� Copying Service File..."
 cp vyom-middleware.service $PKG_DIR/etc/systemd/system/
 
 # 5. Create Control File
 echo "📝 Creating Control File..."
-cat <<EOF > $PKG_DIR/DEBIAN/control
+cat <<CONTROL > $PKG_DIR/DEBIAN/control
 Package: $APP_NAME
 Version: $VERSION
 Section: utils
@@ -47,11 +50,11 @@ Description: Vyom Device Middleware
  Key bridge between Pixhawk, Camera, and Vyom Cloud.
  Auto-detects hardware and manages telemetry.
 Depends: gstreamer1.0-tools, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, v4l-utils
-EOF
+CONTROL
 
 # 6. Create Post-Install Script
 echo "🔧 Creating Post-Install Script..."
-cat <<EOF > $PKG_DIR/DEBIAN/postinst
+cat <<POSTINST > $PKG_DIR/DEBIAN/postinst
 #!/bin/bash
 # Set Permissions
 chmod +x /usr/local/bin/$APP_NAME
@@ -74,7 +77,7 @@ if command -v ufw > /dev/null; then
 fi
 
 echo "✅ Vyom Middleware Installed & Started!"
-EOF
+POSTINST
 chmod 755 $PKG_DIR/DEBIAN/postinst
 
 # 7. Build Package

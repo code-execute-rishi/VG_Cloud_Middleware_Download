@@ -2,7 +2,7 @@
 set -e
 
 APP_NAME="vyom-middleware-local"
-VERSION="2.3.0"
+VERSION="2.5.0"
 ARCH="amd64"
 PKG_DIR="deb_package_local"
 
@@ -20,12 +20,15 @@ mkdir -p $PKG_DIR/DEBIAN
 echo "🔨 Building Middleware Binary (AMD64)..."
 export GOOS=linux
 export GOARCH=amd64
+export CGO_ENABLED=0
 go build -o $PKG_DIR/usr/local/bin/vyom-middleware .
 
 # 3. Build UI (React)
 echo "⚛️  Building Local UI..."
 cd ui
-npm install
+if [ ! -d "node_modules" ]; then
+    npm install
+fi
 npm run build
 cd ..
 cp -r ui/dist/* $PKG_DIR/opt/vyom/ui/
@@ -36,7 +39,7 @@ cp vyom-middleware.service $PKG_DIR/etc/systemd/system/
 
 # 5. Create Control File
 echo "📝 Creating Control File..."
-cat <<EOF > $PKG_DIR/DEBIAN/control
+cat <<CONTROL > $PKG_DIR/DEBIAN/control
 Package: $APP_NAME
 Version: $VERSION
 Section: utils
@@ -46,11 +49,11 @@ Maintainer: Vyom <support@vyom.ai>
 Description: Vyom Device Middleware (Local Test)
  Key bridge between Pixhawk, Camera, and Vyom Cloud.
  Auto-detects hardware and manages telemetry.
-EOF
+CONTROL
 
 # 6. Create Post-Install Script
 echo "🔧 Creating Post-Install Script..."
-cat <<EOF > $PKG_DIR/DEBIAN/postinst
+cat <<'POSTINST' > $PKG_DIR/DEBIAN/postinst
 #!/bin/bash
 # Set Permissions
 chmod +x /usr/local/bin/vyom-middleware
@@ -65,7 +68,25 @@ systemctl daemon-reload
 echo "✅ Vyom Middleware Installed (Local Test)!"
 echo "ℹ️  Service is NOT started automatically to prevent port conflicts."
 echo "ℹ️  To start: sudo systemctl start vyom-middleware"
-EOF
+
+# Auto-open browser if in graphical environment
+if [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; then
+    # Get the actual user (not root)
+    ACTUAL_USER="${SUDO_USER:-$USER}"
+    
+    if [ -n "$ACTUAL_USER" ] && [ "$ACTUAL_USER" != "root" ]; then
+        echo "🌐 Opening browser at http://localhost:8085..."
+        
+        # Wait a moment for service to potentially start (if user does so)
+        sleep 1
+        
+        # Open browser as actual user
+        su - "$ACTUAL_USER" -c "xdg-open http://localhost:8085 >/dev/null 2>&1" &
+    fi
+else
+    echo "ℹ️  No graphical environment detected. Access UI at: http://$(hostname -I | awk '{print $1}'):8085"
+fi
+POSTINST
 chmod 755 $PKG_DIR/DEBIAN/postinst
 
 # 7. Build Package
