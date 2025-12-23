@@ -29,3 +29,11 @@ test_pipe
 # *.sh # Scripts are now kept in legacy_scripts/ or useful
 *.txt
 AGENT_INSTRUCTIONS.md
+
+# Legacy/Backend Scripts (Local Only, Removed from Repo)
+deploy_to_vm.sh
+migrate_to_neon.sh
+add_swap_and_deploy.sh
+drone_camera_sender.html
+package.json
+package-lock.json
