@@ -1,0 +1,88 @@
+#!/bin/bash
+set -e
+
+APP_NAME="vyom-middleware"
+VERSION="2.4.9" # Bumped version
+ARCH="arm64"    # Raspberry Pi 64-bit
+PKG_DIR="deb_package_rpi"
+
+echo "📦 Starting RASPBERRY PI Debian Package Build for $APP_NAME v$VERSION ($ARCH)..."
+
+# 1. Clean & Prepare Directories
+echo "🧹 Cleaning up..."
+rm -rf $PKG_DIR
+mkdir -p $PKG_DIR/usr/local/bin
+mkdir -p $PKG_DIR/etc/systemd/system
+mkdir -p $PKG_DIR/opt/vyom/ui
+mkdir -p $PKG_DIR/DEBIAN
+
+# 2. Build Middleware (Go) - Cross Compile for ARM64
+echo "🔨 Building Middleware Binary (ARM64)..."
+export GOOS=linux
+export GOARCH=arm64
+export CGO_ENABLED=0
+go build -o $PKG_DIR/usr/local/bin/$APP_NAME .
+
+# 3. Build UI (React)
+echo "⚛️  Building Local UI..."
+cd ui
+if [ ! -d "node_modules" ]; then
+    npm install
+fi
+npm run build
+cd ..
+cp -r ui/dist/* $PKG_DIR/opt/vyom/ui/
+
+# 4. Config & Service Files
+echo "📄 Copying Service File..."
+cp vyom-middleware.service $PKG_DIR/etc/systemd/system/
+
+# 5. Create Control File
+echo "📝 Creating Control File..."
+cat <<CONTROL > $PKG_DIR/DEBIAN/control
+Package: $APP_NAME
+Version: $VERSION
+Section: utils
+Priority: optional
+Architecture: $ARCH
+Maintainer: Vyom <support@vyom.ai>
+Description: Vyom Device Middleware (Raspberry Pi Edition)
+ Key bridge between Pixhawk, Camera, and Vyom Cloud.
+ Auto-detects hardware and manages telemetry.
+ Optimized for Raspberry Pi.
+Depends: gstreamer1.0-tools, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, v4l-utils
+CONTROL
+
+# 6. Create Post-Install Script
+echo "🔧 Creating Post-Install Script..."
+cat <<POSTINST > $PKG_DIR/DEBIAN/postinst
+#!/bin/bash
+# Set Permissions
+chmod +x /usr/local/bin/$APP_NAME
+chmod 755 /opt/vyom/ui
+
+# Reload Systemd
+systemctl daemon-reload
+systemctl enable $APP_NAME
+systemctl restart $APP_NAME
+
+# Firewall Configuration (if ufw exists)
+if command -v ufw > /dev/null; then
+    echo "🔒 Configuring Firewall..."
+    ufw allow 8085/tcp comment 'Vyom Middleware UI'
+    ufw allow 14550/udp comment 'Mavlink'
+    # Check if ufw is active, if so, reload
+    if ufw status | grep -q "Status: active"; then
+        ufw reload
+    fi
+fi
+
+echo "✅ Vyom Middleware (RPi) Installed & Started!"
+POSTINST
+chmod 755 $PKG_DIR/DEBIAN/postinst
+
+# 7. Build Package
+echo "📦 Building .deb..."
+dpkg-deb --build $PKG_DIR "${APP_NAME}_${VERSION}_${ARCH}.deb"
+
+echo "🎉 Build Complete: ${APP_NAME}_${VERSION}_${ARCH}.deb"
