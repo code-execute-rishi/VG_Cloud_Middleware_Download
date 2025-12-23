@@ -39,10 +39,12 @@ The middleware uses a Display/CLI based setup wizard.
 ```bash
 cd vyom-gcs/device-middleware
 
-# Build the binary
-go build -o middleware-bin .
+# Build the package (Recommended)
+make package-rpi
+sudo dpkg -i vyom-middleware_*.deb
 
-# Run
+# OR Build locally
+make build-local
 ./middleware-bin
 ```
 

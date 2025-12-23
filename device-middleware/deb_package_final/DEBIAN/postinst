@@ -1,0 +1,11 @@
+#!/bin/bash
+chmod +x /usr/local/bin/vyom-middleware
+chmod 755 /opt/vyom/ui
+systemctl daemon-reload
+systemctl enable vyom-middleware
+systemctl restart vyom-middleware
+if command -v ufw > /dev/null; then
+    ufw allow 8085/tcp comment 'Vyom Middleware UI'
+    ufw allow 14550/udp comment 'Mavlink'
+fi
+echo "✅ Vyom Middleware (RPi) Installed & Started!"

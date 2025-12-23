@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/bluenviron/gomavlib/v3"
@@ -24,6 +23,9 @@ import (
 	webrtc "github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 	ivfreader "github.com/pion/webrtc/v4/pkg/media/ivfreader"
+
+	"device-middleware/internal/backend"
+	"device-middleware/internal/camera"
 )
 
 // --- Configuration Constants ---
@@ -34,7 +36,7 @@ const (
 )
 
 var (
-	BackendBaseURL  = DefaultBaseURL
+	BackendBaseURL  = backend.DefaultBaseURL
 	FrontendBaseURL = "https://middleware-gcs-assigment.vercel.app" // Default Frontend
 )
 
@@ -175,51 +177,6 @@ type LiveKitDataMessage struct {
 	Data LiveKitTelemetry `json:"data"`
 }
 
-// --- MISSING TYPES (Moved from backend_client.go) ---
-type Identity struct {
-	DeviceID  string `json:"device_id"`
-	Token     string `json:"token"`
-	AuthToken string `json:"auth_token"`
-}
-
-type CheckClaimRequest struct {
-	DeviceID string `json:"device_id"`
-}
-
-type CheckClaimResponse struct {
-	Claim   bool   `json:"claim_status"`
-	Message string `json:"message"`
-}
-
-type TelemetryUpdate struct {
-	Latitude       float64 `json:"latitude"`
-	Longitude      float64 `json:"longitude"`
-	Altitude       float32 `json:"altitude"`
-	Speed          float32 `json:"speed"`
-	Heading        float32 `json:"heading"`
-	SignalStrength int     `json:"signal_strength"`
-	Battery        int     `json:"battery"`
-	Armed          bool    `json:"armed"`
-	FlightMode     string  `json:"flight_mode"`
-}
-
-type ZerotierConfig struct {
-	NetworkID string `json:"network_id"`
-}
-
-type VerifyResponse struct {
-	LiveKitToken string         `json:"livekit_token"`
-	LiveKitURL   string         `json:"livekit_url"`
-	AuthToken    string         `json:"auth_token"`
-	RoomName     string         `json:"room_name"`
-	Zerotier     ZerotierConfig `json:"zerotier"`
-}
-
-type LKTokenResponse struct {
-	Token      string `json:"token"`
-	LiveKitURL string `json:"livekit_url"`
-}
-
 // --- Global State ---
 var (
 	cameraMutex  sync.Mutex
@@ -233,7 +190,7 @@ var (
 	activeRoom      *lksdk.Room
 	activeRoomMutex sync.Mutex
 
-	apiClient *BackendClient
+	apiClient *backend.BackendClient
 
 	// V3 Setup Logic State
 	setupConnectURL string
@@ -309,7 +266,7 @@ func main() {
 	if *resetFlag {
 		log.Println("WARNING: Resetting Device Configuration...")
 		os.Remove(ConfigFileName)
-		os.Remove(IdentityFile)
+		os.Remove(backend.IdentityFile)
 		log.Println("Reset complete. Starting fresh...")
 	}
 
@@ -324,7 +281,7 @@ func main() {
 	}
 
 	// 1. Initialize API Client & Identity
-	apiClient = NewBackendClient(BackendBaseURL)
+	apiClient = backend.NewBackendClient(BackendBaseURL)
 	if err := apiClient.LoadOrCreateIdentity(); err != nil {
 		log.Fatalf("Failed to load identity: %v", err)
 	}
@@ -380,10 +337,10 @@ func handleClaim(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Save Identity
-	apiClient.Identity = &Identity{
+	apiClient.Identity = &backend.Identity{
 		DeviceID:  deviceID,
 		Token:     token,
-		AuthToken: authToken, // New: Save API Auth Token
+		AuthToken: authToken,
 	}
 	apiClient.TypifySaveIdentity()
 
@@ -568,7 +525,7 @@ func runStateLoop() {
 
 // --- TELEMETRY & CLAIM LOOP ---
 
-func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
+func telemetryAndClaimLoop(client *backend.BackendClient, config ConfigFile) {
 	// Start MAVLink
 	// Using GStreamer Pipeline for Video
 
@@ -584,7 +541,7 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 	// cameraResolution = res // Updated Global (Removed unused)
 	cameraMutex.Unlock()
 
-	go startCamera(ctx, res)
+	go camera.StartCameraSupervisor(ctx, res)
 	defer cancel()
 
 	// MAVLINK SETUP
@@ -706,7 +663,7 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 							deviceStatusMutex.Lock()
 							deviceStatus.Hardware.FCConnected = true
 							deviceStatusMutex.Unlock()
-							log.Printf("[MAVLink LOG] Heartbeat: Type=%d BaseMode=%d CustomMode=%d SystemStatus=%d SysID=%d CompID=%d", msg.Type, msg.BaseMode, msg.CustomMode, msg.SystemStatus, frm.SystemID(), frm.ComponentID())
+							log.Printf("[MAVLink INFO] Heartbeat: SysID=%d CompID=%d Status=%d", frm.SystemID(), frm.ComponentID(), msg.SystemStatus)
 
 							// DYNAMIC STREAM REQUEST (On first heartbeat or periodically)
 							// If we haven't requested yet, or just to be sure (simple logic: do it every few seconds logic can be added later, for now just do it on every heartbeat for heavy debug or add a "switich" flag)
@@ -755,7 +712,7 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 							telemAlt = msg.Alt
 							telemHdg = msg.Hdg
 							telemMutex.Unlock()
-							log.Printf("[MAVLink LOG] GlobalPos: Lat=%d Lon=%d Alt=%d Hdg=%d", msg.Lat, msg.Lon, msg.Alt, msg.Hdg)
+							// log.Printf("[MAVLink LOG] GlobalPos: Lat=%d Lon=%d Alt=%d Hdg=%d", msg.Lat, msg.Lon, msg.Alt, msg.Hdg)
 						}
 						// Sys Status (Battery)
 						if msg, ok := frm.Message().(*ardupilotmega.MessageSysStatus); ok {
@@ -763,7 +720,7 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 							telemBatt = float32(msg.BatteryRemaining)
 							telemVolt = float32(msg.VoltageBattery) / 1000.0 // mV to V
 							telemMutex.Unlock()
-							log.Printf("[MAVLink LOG] SysStatus: Volt=%d (%.2fV) Batt=%d%%", msg.VoltageBattery, telemVolt, msg.BatteryRemaining)
+							// log.Printf("[MAVLink LOG] SysStatus: Volt=%d (%.2fV) Batt=%d%%", msg.VoltageBattery, telemVolt, msg.BatteryRemaining)
 						}
 						// VFR HUD (Speed)
 						if msg, ok := frm.Message().(*ardupilotmega.MessageVfrHud); ok {
@@ -778,7 +735,7 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 								Climb:       msg.Climb,
 							}
 							telemMutex.Unlock()
-							log.Printf("[MAVLink LOG] VFR_HUD: Speed=%.2f Heading=%d Throttle=%d", msg.Groundspeed, msg.Heading, msg.Throttle)
+							// log.Printf("[MAVLink LOG] VFR_HUD: Speed=%.2f Heading=%d Throttle=%d", msg.Groundspeed, msg.Heading, msg.Throttle)
 						}
 						// GPS RAW INT (Satellites)
 						if msg, ok := frm.Message().(*ardupilotmega.MessageGpsRawInt); ok {
@@ -811,7 +768,7 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 								Seq: msg.Seq,
 							}
 							telemMutex.Unlock()
-							log.Printf("📍 Mission Current: %d", msg.Seq)
+							// log.Printf("📍 Mission Current: %d", msg.Seq)
 						}
 						// HOME POSITION
 						if msg, ok := frm.Message().(*ardupilotmega.MessageHomePosition); ok {
@@ -822,12 +779,13 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 								Alt: msg.Altitude,
 							}
 							telemMutex.Unlock()
-							log.Printf("🏠 Home Position Recv: Lat=%d Lon=%d", msg.Latitude, msg.Longitude)
+							// log.Printf("🏠 Home Position Recv: Lat=%d Lon=%d", msg.Latitude, msg.Longitude)
 						}
 					}
 					// Parse Error Handling
 					if errEvt, ok := evt.(*gomavlib.EventParseError); ok {
-						log.Printf("[MAVLink ERROR] Parse Error: %v", errEvt.Error)
+						// log.Printf("[MAVLink ERROR] Parse Error: %v", errEvt.Error)
+						_ = errEvt
 					}
 				}
 			}
@@ -1013,125 +971,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func startCamera(ctx context.Context, res string) {
-	// 1. Check if rpicam-vid exists
-	rpiPath, err := exec.LookPath("rpicam-vid")
-	_ = rpiPath // Silence "declared and not used"
-	useLibCamera := (err == nil)
-	// useLibCamera := false // Force V4L2 for testing on desktop
-
-	// Crash Counter
-	crashCount := 0
-	lastCrashTime := time.Now()
-	forceTestPattern := false
-
-	for {
-		// Check for Context Cancel
-		select {
-		case <-ctx.Done():
-			log.Println("[Camera] Supervisor stopping...")
-			return
-		default:
-		}
-
-		var cmd *exec.Cmd
-		// Resolution Parsing
-		width := "640"
-		height := "480"
-		if res == "1280x720" {
-			width = "1280"
-			height = "720"
-		}
-
-		// determine mode
-		useRealCamera := !forceTestPattern
-
-		// If using libcamera
-		if useRealCamera && useLibCamera {
-			log.Println("[Camera] Using rpicam-vid (Libcamera)...")
-			cmd = exec.CommandContext(ctx, "sh", "-c", fmt.Sprintf(
-				"rpicam-vid -t 0 --inline --width %s --height %s --framerate 30 --codec libav --libav-format yuv420p -o - | "+
-					"gst-launch-1.0 fdsrc ! videoparse width=%s height=%s framerate=30/1 format=i420 ! "+
-					"tee name=t ! queue max-size-buffers=1 leaky=downstream ! vp8enc deadline=1 ! avmux_ivf ! tcpclientsink host=127.0.0.1 port=5600 "+
-					"t. ! queue ! videoscale ! video/x-raw,width=320,height=240 ! jpegenc ! multipartmux boundary=vyomboundary ! tcpserversink host=0.0.0.0 port=8081",
-				width, height, width, height,
-			))
-		} else if useRealCamera {
-			// Auto-Detect V4L2
-			videoDevice := "/dev/video0"
-			if _, err := os.Stat(videoDevice); err == nil {
-				log.Printf("[Camera] Found physical camera at %s", videoDevice)
-				fullCmd := fmt.Sprintf(
-					"gst-launch-1.0 v4l2src device=%s ! videoconvert ! video/x-raw,format=I420,width=%s,height=%s,framerate=30/1 ! "+
-						"tee name=t ! queue max-size-buffers=4 leaky=downstream ! vp8enc error-resilient=1 deadline=1 keyframe-max-dist=30 cpu-used=5 ! \"video/x-vp8\" ! queue ! avmux_ivf ! tcpclientsink host=127.0.0.1 port=5600 "+
-						"t. ! queue max-size-buffers=4 leaky=downstream ! videoscale ! \"video/x-raw,width=320,height=240\" ! jpegenc ! multipartmux boundary=vyomboundary ! tcpserversink host=127.0.0.1 port=8081 sync=false",
-					videoDevice, width, height,
-				)
-				log.Println("[Camera] Starting Pipeline Step: " + fullCmd)
-				cmd = exec.Command("sh", "-c", fullCmd)
-				cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-			} else {
-				log.Println("[Camera] No physical camera found. Using Test Source (Snow)...")
-				// Fallback to snow immediately if no device
-				forceTestPattern = true
-				continue // Restart loop to hit the else block below (or handle here, but cleaner to restart)
-			}
-		}
-
-		// If we decided to use test pattern (or fallback triggered)
-		if forceTestPattern {
-			log.Println("[Camera] Using Test Source (Snow)...")
-			fullCmd := fmt.Sprintf(
-				"gst-launch-1.0 videotestsrc is-live=true pattern=snow ! videoconvert ! video/x-raw,format=I420,width=%s,height=%s,framerate=30/1 ! "+
-					"tee name=t ! queue max-size-buffers=4 leaky=downstream ! vp8enc error-resilient=1 deadline=1 keyframe-max-dist=30 cpu-used=5 ! \"video/x-vp8\" ! queue ! avmux_ivf ! tcpclientsink host=127.0.0.1 port=5600 "+
-					"t. ! queue max-size-buffers=4 leaky=downstream ! videoscale ! \"video/x-raw,width=320,height=240\" ! jpegenc ! multipartmux boundary=vyomboundary ! tcpserversink host=127.0.0.1 port=8081 sync=false",
-				width, height,
-			)
-			log.Println("[Camera] Starting Pipeline Step: " + fullCmd)
-			cmd = exec.Command("sh", "-c", fullCmd)
-			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		}
-
-		// Start Process
-		if err := cmd.Start(); err != nil {
-			log.Printf("[Camera] Failed to start pipeline: %v. Retrying in 2s...", err)
-			time.Sleep(2 * time.Second)
-			continue
-		}
-		log.Printf("[Camera] ✅ Pipeline started with PID %d", cmd.Process.Pid)
-
-		// Wait for Process to Exit (Blocking)
-		err := cmd.Wait()
-
-		// If we are here, process exited.
-		log.Printf("[Camera] ⚠️ Pipeline Exited: %v", err)
-
-		// Check for Context Cancel (Clean Shutdown)
-		select {
-		case <-ctx.Done():
-			return // Normal exit
-		default:
-		}
-
-		// Crash Logic
-		if time.Since(lastCrashTime) < 30*time.Second {
-			crashCount++
-		} else {
-			crashCount = 1 // Reset
-		}
-		lastCrashTime = time.Now()
-
-		if crashCount >= 3 && !forceTestPattern {
-			log.Println("[Camera] 🚨 Too many crashes! Falling back to Test Pattern (Snow) for stability.")
-			forceTestPattern = true
-		}
-
-		log.Println("[Camera] Restarting pipeline in 2 seconds...")
-		time.Sleep(2 * time.Second)
-	}
-}
-
-func connectToLiveKit(roomName string, client *BackendClient) {
+func connectToLiveKit(roomName string, client *backend.BackendClient) {
 	activeRoomMutex.Lock()
 	defer activeRoomMutex.Unlock()
 
