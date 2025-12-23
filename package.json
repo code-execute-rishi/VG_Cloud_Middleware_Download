@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "node-mavlink": "^2.3.0",
+    "peer": "^1.0.2"
+  }
+}

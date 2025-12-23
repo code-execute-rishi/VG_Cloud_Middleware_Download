@@ -4,10 +4,16 @@
 *.pem
 .env
 
-# Go
+# Go Binaries
 middleware-bin
+middleware-check
+vyom-middleware
 device-middleware/device.log
 device-middleware/middleware-bin
+
+# Build Directories
+device-middleware/deb_package/
+device-middleware/deb_package_local/
 
 # Node / Frontend
 node_modules/
@@ -20,9 +26,6 @@ device-middleware/ui/dist/
 test_pipe
 
 # Clutter / Local Only
-*.sh
-*.html
+# *.sh # Scripts are now kept in legacy_scripts/ or useful
 *.txt
-package.json
-package-lock.json
 AGENT_INSTRUCTIONS.md

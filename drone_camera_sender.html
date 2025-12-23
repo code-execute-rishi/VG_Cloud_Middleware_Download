@@ -1,0 +1,75 @@
+/*
+ * Drone Video Sender (Simulated Drone)
+ * 
+ * This script runs in the browser (or could be adapted for Node with webrtc libs).
+ * For now, we'll create a simple HTML file you can open in a new tab to act as the "Drone".
+ * It grabs your webcam and calls the GCS.
+ */
+
+const htmlContent = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Drone Camera Sender</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        body { background: #111; color: #eee; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+        video { border: 2px solid #0ea5e9; border-radius: 8px; max-width: 80%; margin-bottom: 20px; }
+        .status { padding: 10px 20px; background: #333; border-radius: 4px; }
+        .online { color: #22c55e; }
+        .offline { color: #ef4444; }
+    </style>
+</head>
+<body>
+    <h1>🚁 Drone Camera Feed</h1>
+    <video id="localVideo" autoplay playsinline muted></video>
+    <div id="status" class="status">Initializing...</div>
+
+    <script>
+        const statusEl = document.getElementById('status');
+        
+        // 1. Get Webcam Stream
+        navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+            .then(stream => {
+                document.getElementById('localVideo').srcObject = stream;
+                startPeerConnection(stream);
+            })
+            .catch(err => {
+                statusEl.innerHTML = "❌ Camera Error: " + err.message;
+                statusEl.className = "status offline";
+            });
+
+        function startPeerConnection(stream) {
+            // Connect to the local PeerServer
+            const peer = new Peer('drone-sender', {
+                host: 'localhost',
+                port: 9000,
+                path: '/'
+            });
+
+            peer.on('open', (id) => {
+                statusEl.innerHTML = "✅ Connected. Calling GCS...";
+                statusEl.className = "status online";
+                
+                // Call the GCS (Static ID: gcs-client)
+                const call = peer.call('gcs-client', stream);
+                
+                call.on('close', () => {
+                    statusEl.innerHTML += "<br>Call ended.";
+                });
+                
+                call.on('error', (err) => {
+                     statusEl.innerHTML += "<br>Call Error: " + err;
+                });
+            });
+
+            peer.on('error', (err) => {
+                statusEl.innerHTML = "❌ Peer Error: " + err.type;
+            });
+        }
+    </script>
+</body>
+</html>
+`;
