@@ -1,0 +1,47 @@
+#!/bin/bash
+
+echo "=== RPi Camera Diagnostic Tool ==="
+echo "Time: $(date)"
+echo "Kernel: $(uname -a)"
+
+echo -e "\n--- 1. Checking GPU Camera (CSI) ---"
+if command -v vcgencmd >/dev/null; then
+    vcgencmd get_camera
+else
+    echo "vcgencmd not found (not RPi or not installed)"
+fi
+
+echo -e "\n--- 2. Checking USB Devices ---"
+lsusb
+
+echo -e "\n--- 3. Checking Video Devices ---"
+ls -l /dev/video*
+
+echo -e "\n--- 4. Detailed Video Device Info ---"
+if command -v v4l2-ctl >/dev/null; then
+    for dev in /dev/video*; do
+        if [ -e "$dev" ]; then
+            echo "Checking $dev..."
+            v4l2-ctl -d "$dev" --all | grep "Card type"
+        fi
+    done
+else
+    echo "v4l2-ctl not found. Install v4l-utils for more info."
+fi
+
+echo -e "\n--- 5. Testing GStreamer Pipeline (Test Pattern) ---"
+if command -v gst-launch-1.0 >/dev/null; then
+    echo "Trying to generate valid video test source..."
+    timeout 5s gst-launch-1.0 videotestsrc ! fakesink
+    if [ $? -eq 124 ]; then
+        echo "SUCCESS: GStreamer pipeline ran (timed out as expected)"
+    elif [ $? -eq 0 ]; then
+         echo "SUCCESS: GStreamer pipeline ran"
+    else
+         echo "FAILURE: GStreamer returned error $?"
+    fi
+else
+    echo "gst-launch-1.0 not found."
+fi
+
+echo -e "\n=== Diagnostics Complete ==="

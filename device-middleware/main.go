@@ -11,13 +11,14 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/bluenviron/gomavlib/v3"
-	"github.com/bluenviron/gomavlib/v3/pkg/dialects/common"
+	"github.com/bluenviron/gomavlib/v3/pkg/dialects/ardupilotmega"
 	"github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	webrtc "github.com/pion/webrtc/v4"
@@ -238,9 +239,70 @@ var (
 	setupConnectURL string
 )
 
+// --- Port Cleanup Logic ---
+func CleanupPort(port int) {
+	log.Printf("[Init] Checking if port %d is in use...", port)
+
+	addr := fmt.Sprintf(":%d", port)
+	ln, err := net.Listen("tcp", addr)
+	if err == nil {
+		ln.Close()
+		return // Port is free
+	}
+
+	log.Printf("[Init] Port %d is in use. Attempting to free it...", port)
+
+	// Try fuser first (standard on many Linux distros)
+	cmd := exec.Command("fuser", "-k", fmt.Sprintf("%d/tcp", port))
+	if err := cmd.Run(); err == nil {
+		log.Printf("[Init] Killed process on port %d using fuser.", port)
+		time.Sleep(1 * time.Second)
+		return
+	}
+
+	// Fallback to lsof
+	cmd = exec.Command("sh", "-c", fmt.Sprintf("lsof -t -i:%d", port))
+	pidBytes, err := cmd.Output()
+	if err == nil {
+		pidStr := strings.TrimSpace(string(pidBytes))
+		if pidStr != "" {
+			pid, _ := strconv.Atoi(pidStr)
+			log.Printf("[Init] Found PID %d on port %d. Killing...", pid, port)
+
+			proc, err := os.FindProcess(pid)
+			if err == nil {
+				proc.Kill()
+				proc.Release()
+				time.Sleep(1 * time.Second)
+				log.Println("[Init] Process killed.")
+				return
+			}
+		}
+	} else {
+		// Fallback to pkill if lsof fails (likely user permission issue seeing other processes)
+		// Try killing the binary name directly if provided
+		log.Println("[Init] 'lsof' failed. Trying 'pkill -f middleware-bin'...")
+		exec.Command("pkill", "-f", "middleware-bin").Run()
+		exec.Command("pkill", "-f", "vyom-middleware").Run()
+		time.Sleep(1 * time.Second)
+	}
+
+	// Check again
+	ln, err = net.Listen("tcp", addr)
+	if err == nil {
+		ln.Close()
+		log.Println("[Init] Port successfully freed.")
+	} else {
+		log.Println("[Init] ⚠️ Could not free port. You might need to run with 'sudo' or kill manually.")
+	}
+}
+
 // --- MAIN ENTRY POINT ---
 
 func main() {
+	// Cleanup port 8085 if blocked (SetupPort)
+	CleanupPort(8085)
+
 	resetFlag := flag.Bool("reset", false, "Reset configuration and identity")
 	flag.Parse()
 
@@ -553,7 +615,7 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 		}
 
 		if foundPort != "" {
-			log.Printf("[Hardware] ✅ Found Physical Device: %s", foundPort)
+			log.Printf("[Hardware] ✅ Found Physical Device: %s (Baud: %d)", foundPort, fcBaud)
 			fcPort = foundPort
 			endpoints = []gomavlib.EndpointConf{
 				gomavlib.EndpointSerial{Device: foundPort, Baud: fcBaud},
@@ -582,9 +644,9 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 
 	node, err = gomavlib.NewNode(gomavlib.NodeConf{
 		Endpoints:   endpoints,
-		Dialect:     common.Dialect,
+		Dialect:     ardupilotmega.Dialect,
 		OutVersion:  gomavlib.V2,
-		OutSystemID: 10,
+		OutSystemID: 255, // Standard GCS ID
 	})
 
 	if err != nil {
@@ -593,11 +655,11 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 		defer node.Close()
 		log.Printf("[MAVLink] Link Active")
 
-		// Request Data Streams
-		msg := &common.MessageRequestDataStream{
-			TargetSystem:    1,
-			TargetComponent: 1,
-			ReqStreamId:     uint8(common.MAV_DATA_STREAM_ALL),
+		// Request Data Streams (TargetSystem 0 = Broadcast to all)
+		msg := &ardupilotmega.MessageRequestDataStream{
+			TargetSystem:    0,
+			TargetComponent: 0,
+			ReqStreamId:     uint8(ardupilotmega.MAV_DATA_STREAM_ALL),
 			ReqMessageRate:  4, // 4 Hz
 			StartStop:       1,
 		}
@@ -630,55 +692,96 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 	if node != nil {
 		go func() {
 			for evt := range node.Events() {
+				// DEBUG: Log every event type to see what we are getting
+				log.Printf("[MAVLink DEBUG] Event: %T", evt)
+
 				select {
 				case <-ctx.Done():
 					return
 				default:
 					if frm, ok := evt.(*gomavlib.EventFrame); ok {
 						// Heartbeat
-						if _, ok := frm.Message().(*common.MessageHeartbeat); ok {
+						if msg, ok := frm.Message().(*ardupilotmega.MessageHeartbeat); ok {
 							telemLastHeartbeat = time.Now().Unix()
 							deviceStatusMutex.Lock()
 							deviceStatus.Hardware.FCConnected = true
 							deviceStatusMutex.Unlock()
+							log.Printf("[MAVLink LOG] Heartbeat: Type=%d BaseMode=%d CustomMode=%d SystemStatus=%d SysID=%d CompID=%d", msg.Type, msg.BaseMode, msg.CustomMode, msg.SystemStatus, frm.SystemID(), frm.ComponentID())
+
+							// DYNAMIC STREAM REQUEST (On first heartbeat or periodically)
+							// If we haven't requested yet, or just to be sure (simple logic: do it every few seconds logic can be added later, for now just do it on every heartbeat for heavy debug or add a "switich" flag)
+							// Let's do it if we haven't seen messages in a while? No, let's just do it on connecting.
+							// For safety in this debug phase, we'll re-request "ALL" targeting this SystemID
+							if frm.SystemID() > 0 {
+								// Request Data Streams explicitly for this SystemID
+								node.WriteMessageAll(&ardupilotmega.MessageRequestDataStream{
+									TargetSystem:    frm.SystemID(),
+									TargetComponent: frm.ComponentID(),
+									ReqStreamId:     uint8(ardupilotmega.MAV_DATA_STREAM_ALL),
+									ReqMessageRate:  4,
+									StartStop:       1,
+								})
+								// Request EXTRA1 (Attitude)
+								node.WriteMessageAll(&ardupilotmega.MessageRequestDataStream{
+									TargetSystem:    frm.SystemID(),
+									TargetComponent: frm.ComponentID(),
+									ReqStreamId:     uint8(ardupilotmega.MAV_DATA_STREAM_EXTRA1),
+									ReqMessageRate:  4,
+									StartStop:       1,
+								})
+								// Request POSITION
+								node.WriteMessageAll(&ardupilotmega.MessageRequestDataStream{
+									TargetSystem:    frm.SystemID(),
+									TargetComponent: frm.ComponentID(),
+									ReqStreamId:     uint8(ardupilotmega.MAV_DATA_STREAM_POSITION),
+									ReqMessageRate:  4,
+									StartStop:       1,
+								})
+								// Request EXTENDED_STATUS
+								node.WriteMessageAll(&ardupilotmega.MessageRequestDataStream{
+									TargetSystem:    frm.SystemID(),
+									TargetComponent: frm.ComponentID(),
+									ReqStreamId:     uint8(ardupilotmega.MAV_DATA_STREAM_EXTENDED_STATUS),
+									ReqMessageRate:  2,
+									StartStop:       1,
+								})
+							}
 						}
 						// Global Position
-						if msg, ok := frm.Message().(*common.MessageGlobalPositionInt); ok {
+						if msg, ok := frm.Message().(*ardupilotmega.MessageGlobalPositionInt); ok {
 							telemMutex.Lock()
 							telemLat = msg.Lat
 							telemLon = msg.Lon
 							telemAlt = msg.Alt
 							telemHdg = msg.Hdg
 							telemMutex.Unlock()
+							log.Printf("[MAVLink LOG] GlobalPos: Lat=%d Lon=%d Alt=%d Hdg=%d", msg.Lat, msg.Lon, msg.Alt, msg.Hdg)
 						}
 						// Sys Status (Battery)
-						if msg, ok := frm.Message().(*common.MessageSysStatus); ok {
+						if msg, ok := frm.Message().(*ardupilotmega.MessageSysStatus); ok {
 							telemMutex.Lock()
 							telemBatt = float32(msg.BatteryRemaining)
 							telemVolt = float32(msg.VoltageBattery) / 1000.0 // mV to V
 							telemMutex.Unlock()
-							// Debug Log
-							if telemVolt > 0 {
-								// log.Printf("🔋 Battery: %d%%, Voltage: %.2fV", msg.BatteryRemaining, telemVolt)
-							}
+							log.Printf("[MAVLink LOG] SysStatus: Volt=%d (%.2fV) Batt=%d%%", msg.VoltageBattery, telemVolt, msg.BatteryRemaining)
 						}
 						// VFR HUD (Speed)
-						if msg, ok := frm.Message().(*common.MessageVfrHud); ok {
+						if msg, ok := frm.Message().(*ardupilotmega.MessageVfrHud); ok {
 							telemMutex.Lock()
 							telemSpeed = float32(msg.Groundspeed)
 							telemVfrHud = VfrHud{
 								Airspeed:    msg.Airspeed,
 								Groundspeed: msg.Groundspeed,
-								Heading:     msg.Heading,
+								Heading:     int16(msg.Heading), // Cast to int16
 								Throttle:    msg.Throttle,
 								Alt:         msg.Alt,
 								Climb:       msg.Climb,
 							}
 							telemMutex.Unlock()
-							// log.Printf("🚀 Speed: %.2f m/s", telemSpeed)
+							log.Printf("[MAVLink LOG] VFR_HUD: Speed=%.2f Heading=%d Throttle=%d", msg.Groundspeed, msg.Heading, msg.Throttle)
 						}
 						// GPS RAW INT (Satellites)
-						if msg, ok := frm.Message().(*common.MessageGpsRawInt); ok {
+						if msg, ok := frm.Message().(*ardupilotmega.MessageGpsRawInt); ok {
 							telemMutex.Lock()
 							telemGpsRaw = GpsRaw{
 								FixType:    uint8(msg.FixType),
@@ -687,7 +790,7 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 							telemMutex.Unlock()
 						}
 						// NAV CONTROLLER OUTPUT (Wp Dist, etc)
-						if msg, ok := frm.Message().(*common.MessageNavControllerOutput); ok {
+						if msg, ok := frm.Message().(*ardupilotmega.MessageNavControllerOutput); ok {
 							telemMutex.Lock()
 							telemNavOutput = NavControllerOutput{
 								NavRoll:       msg.NavRoll,
@@ -702,7 +805,7 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 							telemMutex.Unlock()
 						}
 						// MISSION CURRENT (Seq)
-						if msg, ok := frm.Message().(*common.MessageMissionCurrent); ok {
+						if msg, ok := frm.Message().(*ardupilotmega.MessageMissionCurrent); ok {
 							telemMutex.Lock()
 							telemMissionCurrent = MissionCurrent{
 								Seq: msg.Seq,
@@ -711,7 +814,7 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 							log.Printf("📍 Mission Current: %d", msg.Seq)
 						}
 						// HOME POSITION
-						if msg, ok := frm.Message().(*common.MessageHomePosition); ok {
+						if msg, ok := frm.Message().(*ardupilotmega.MessageHomePosition); ok {
 							telemMutex.Lock()
 							telemHome = HomePosition{
 								Lat: msg.Latitude,
@@ -721,6 +824,10 @@ func telemetryAndClaimLoop(client *BackendClient, config ConfigFile) {
 							telemMutex.Unlock()
 							log.Printf("🏠 Home Position Recv: Lat=%d Lon=%d", msg.Latitude, msg.Longitude)
 						}
+					}
+					// Parse Error Handling
+					if errEvt, ok := evt.(*gomavlib.EventParseError); ok {
+						log.Printf("[MAVLink ERROR] Parse Error: %v", errEvt.Error)
 					}
 				}
 			}
