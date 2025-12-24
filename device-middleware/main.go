@@ -24,6 +24,7 @@ import (
 	"github.com/pion/webrtc/v4/pkg/media"
 	ivfreader "github.com/pion/webrtc/v4/pkg/media/ivfreader"
 
+	"device-middleware/internal/auth"
 	"device-middleware/internal/backend"
 	"device-middleware/internal/camera"
 )
@@ -91,14 +92,28 @@ type AuthStatus struct {
 }
 
 type GlobalDeviceStatus struct {
-	IsConfigured bool           `json:"is_configured"`
-	IsConnected  bool           `json:"is_connected"` // Cloud/LiveKit Connected
-	IsClaimed    bool           `json:"is_claimed"`
-	Camera       CameraConfig   `json:"camera_config"`
-	Hardware     HardwareStatus `json:"hardware_status"`
-	LiveKit      LiveKitStatus  `json:"livekit_status"`
-	ZeroTier     ZeroTierStatus `json:"zerotier_status"`
-	Auth         AuthStatus     `json:"auth_status"`
+	IsConfigured bool             `json:"is_configured"`
+	IsConnected  bool             `json:"is_connected"` // Cloud/LiveKit Connected
+	IsClaimed    bool             `json:"is_claimed"`
+	Camera       CameraConfig     `json:"camera_config"`
+	Hardware     HardwareStatus   `json:"hardware_status"`
+	LiveKit      LiveKitStatus    `json:"livekit_status"`
+	ZeroTier     ZeroTierStatus   `json:"zerotier_status"`
+	Auth         AuthStatus       `json:"auth_status"`
+	Telemetry    *TelemetryStatus `json:"telemetry,omitempty"`
+	User         *auth.UserClaims `json:"user_info,omitempty"`
+}
+
+type TelemetryStatus struct {
+	Battery *SysStatus      `json:"battery"`
+	GPS     *GpsRaw         `json:"gps"`
+	HUD     *VfrHud         `json:"hud"`
+	System  *TelemetryState `json:"system"`
+}
+
+type TelemetryState struct {
+	Armed bool   `json:"armed"`
+	Mode  string `json:"mode"`
 }
 
 type HardwareStatus struct {
@@ -194,7 +209,15 @@ var (
 
 	// V3 Setup Logic State
 	setupConnectURL string
+
+	// Global Video Relay
+	videoRelay      *VideoRelay
+	videoRelayMutex sync.RWMutex
 )
+
+type VideoRelay struct {
+	Track *lksdk.LocalSampleTrack
+}
 
 // --- Port Cleanup Logic ---
 func CleanupPort(port int) {
@@ -285,6 +308,9 @@ func main() {
 	if err := apiClient.LoadOrCreateIdentity(); err != nil {
 		log.Fatalf("Failed to load identity: %v", err)
 	}
+
+	// 1.5 Start Global Video Relay (Keeps GStreamer Happy)
+	go startVideoRelayServer()
 
 	// 2. Start Persistent Web Server (For UI and Setup)
 	go startWebServer()
@@ -460,13 +486,34 @@ func runStateLoop() {
 			}
 		}
 
+		// PARSE USER IDENTITY (From JWT)
+		if apiClient.Identity != nil {
+			var tokenToParse string
+			if apiClient.Identity.AuthToken != "" {
+				tokenToParse = apiClient.Identity.AuthToken
+			} else {
+				tokenToParse = apiClient.Identity.Token
+			}
+
+			if claims, err := auth.ParseJWT(tokenToParse); err == nil {
+				deviceStatusMutex.Lock()
+				deviceStatus.User = claims
+				deviceStatusMutex.Unlock()
+			}
+		}
+
 		log.Println("[Loop] Config & Identity Found. Starting Mission Services...")
 
-		// 2. Authenticate
+		// 2. Set Claimed Status IMMEDIATELY (Before LiveKit Auth)
+		// This allows UI to transition to Dashboard even if LiveKit isn't configured
+		deviceStatusMutex.Lock()
+		deviceStatus.IsClaimed = true
+		deviceStatusMutex.Unlock()
+		log.Println("[Loop] Device is Claimed. Proceeding with service initialization...")
+
+		// 3. Authenticate & Get LiveKit Token
 		// V3: Token is in Identity. We just use it.
-		// Optional: VerifyToken endpoint call
-		log.Println("[Loop] Authenticating...")
-		// Assuming Authenticate() in backend_client.go is updated to check/refresh token
+		log.Println("[Loop] Attempting LiveKit authentication...")
 		_, err = apiClient.Authenticate()
 		if err != nil {
 			deviceStatusMutex.Lock()
@@ -474,6 +521,8 @@ func runStateLoop() {
 			deviceStatus.LiveKit.LastError = "Auth Failed"
 			deviceStatusMutex.Unlock()
 
+			// Only reset identity if device was actually deleted/forgotten
+			// Don't reset for configuration issues like missing LiveKit creds
 			if strings.Contains(err.Error(), "DEVICE_FORGOTTEN") {
 				log.Println("⚠️ DEVICE FORGOTTEN BY CLOUD. RESETTING IDENTITY... ⚠️")
 
@@ -492,21 +541,14 @@ func runStateLoop() {
 				os.Remove(ConfigFileName) // Configure wipe
 				os.Exit(0)                // Restart process
 			}
-			log.Printf("[Loop] Auth Failed: %v", err)
-			time.Sleep(5 * time.Second)
+			// For config errors (LiveKit not set up), just log and continue
+			// Device stays claimed, LiveKit will remain disconnected until configured
+			log.Printf("[Loop] LiveKit Auth Failed (non-fatal): %v. Device remains claimed.", err)
+			log.Println("[Loop] Skipping LiveKit connection. Configure LiveKit in Cloud Dashboard to enable video.")
+			// Don't call connectToLiveKit, proceed directly to telemetry loop
+			telemetryAndClaimLoop(apiClient, config)
+			time.Sleep(2 * time.Second)
 			continue
-		}
-
-		// 2.5 Check Claim Status IMMEDIATELY
-		isClaimed, _ := apiClient.CheckClaim()
-		if isClaimed {
-			log.Println("[Loop] Device is ALREADY Claimed.")
-			deviceStatusMutex.Lock()
-			deviceStatus.IsClaimed = true
-			deviceStatusMutex.Unlock()
-		} else {
-			// In V3, we get Token => We are claimed.
-			// But if user unclaims in backend, this check catches it.
 		}
 
 		// 3. Connect to LiveKit
@@ -650,7 +692,7 @@ func telemetryAndClaimLoop(client *backend.BackendClient, config ConfigFile) {
 		go func() {
 			for evt := range node.Events() {
 				// DEBUG: Log every event type to see what we are getting
-				log.Printf("[MAVLink DEBUG] Event: %T", evt)
+				// log.Printf("[MAVLink DEBUG] Event: %T", evt)
 
 				select {
 				case <-ctx.Done():
@@ -865,6 +907,31 @@ func telemetryAndClaimLoop(client *backend.BackendClient, config ConfigFile) {
 				FCConnected:  (time.Now().Unix() - lastHb) < 5,
 				CamConnected: (vidErr == nil),
 			}
+
+			// Update Telemetry for Local UI
+			telemMutex.RLock()
+			deviceStatus.Telemetry = &TelemetryStatus{
+				Battery: &SysStatus{
+					Voltage:          telemVolt,
+					BatteryRemaining: int(telemBatt),
+				},
+				GPS: &GpsRaw{
+					FixType:    telemGpsRaw.FixType,
+					Satellites: telemGpsRaw.Satellites,
+				},
+				HUD: &VfrHud{
+					Heading:     telemVfrHud.Heading,
+					Alt:         0,          // Calculated below
+					Groundspeed: telemSpeed, // Already float32
+				},
+				System: &TelemetryState{
+					Armed: false, // Todo: Get from Heartbeat
+					Mode:  telemMode,
+				},
+			}
+			// Small fix for Alt since we have telemAlt (int32 mm) vs float32
+			deviceStatus.Telemetry.HUD.Alt = float32(telemAlt) / 1000.0
+			telemMutex.RUnlock()
 
 			// Disambiguate: "Unclaimed" vs "Deleted"
 			// If CheckClaim returns false, it could be valid-unclaimed OR deleted.
@@ -1096,38 +1163,50 @@ func publishVideoToRoom(room *lksdk.Room) {
 		break
 	}
 
-	log.Println("[Video] Uplink Ready. Listening for Camera Stream on TCP :5600...")
+	log.Println("[Video] Uplink Ready. Registering Track with Relay...")
 
+	// Register Track with Relay
+	videoRelayMutex.Lock()
+	if videoRelay == nil {
+		videoRelay = &VideoRelay{}
+	}
+	videoRelay.Track = track
+	videoRelayMutex.Unlock()
+}
+
+func startVideoRelayServer() {
 	// Listen for GStreamer Connection (Server Mode)
-	ln, err := net.Listen("tcp", ":5600")
+	// This must ALWAYS run so GStreamer client has something to connect to
+	addr := ":5600"
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Printf("[Video] ❌ Failed to bind port 5600: %v", err)
+		log.Fatalf("[VideoRelay] ❌ Failed to bind port 5600: %v", err)
 		return
 	}
 	defer ln.Close()
+	log.Printf("[VideoRelay] 🟢 Listening on %s for Camera Stream...", addr)
 
 	// Accept Loop
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			log.Printf("[Video] Accept Error: %v", err)
+			log.Printf("[VideoRelay] Accept Error: %v", err)
 			time.Sleep(1 * time.Second)
 			continue
 		}
 
-		log.Println("[Video] 🎥 Camera Connected!")
+		log.Println("[VideoRelay] 🎥 Camera Connected!")
 
 		// Reader Loop
-		// Note: GStreamer tcpclientsink should send the IVF Header immediately upon connection.
 		ivf, header, err := ivfreader.NewWith(conn)
 		_ = header // Silence unused
 		if err != nil {
-			log.Printf("[Video] ❌ Failed to read IVF Header: %v. Closing connection.", err)
+			log.Printf("[VideoRelay] ❌ Failed to read IVF Header: %v. Closing connection.", err)
 			conn.Close()
 			continue
 		}
 
-		log.Printf("[Video] ✅ Stream Header Received! %dx%d",
+		log.Printf("[VideoRelay] ✅ Stream Header Received! %dx%d",
 			header.Width, header.Height)
 
 		for {
@@ -1136,15 +1215,26 @@ func publishVideoToRoom(room *lksdk.Room) {
 				// Connection close or stream restart
 				break
 			}
-			// Send
-			sample := media.Sample{Data: frame, Duration: time.Second / 30} // Approx
-			if err := track.WriteSample(sample, nil); err != nil {
-				log.Printf("[Video] WriteSample Error: %v", err)
-				break
+
+			// Send to LiveKit if Track Available
+			videoRelayMutex.RLock()
+			var track *lksdk.LocalSampleTrack
+			if videoRelay != nil {
+				track = videoRelay.Track
 			}
+			videoRelayMutex.RUnlock()
+
+			if track != nil {
+				sample := media.Sample{Data: frame, Duration: time.Second / 30}
+				if err := track.WriteSample(sample, nil); err != nil {
+					// log.Printf("[VideoRelay] WriteSample Error: %v", err)
+					// Don't break, just log? Or maybe track is dead
+				}
+			}
+			// If no track, we just consume the frame (discard)
 		}
 
 		conn.Close()
-		log.Println("[Video] Camera Disconnected. Waiting for reconnection...")
+		log.Println("[VideoRelay] Camera Disconnected. Waiting for reconnection...")
 	}
 }

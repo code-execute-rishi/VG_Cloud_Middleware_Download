@@ -37,7 +37,7 @@ package-rpi: clean
 	cp vyom-middleware.service $(PKG_DIR)/etc/systemd/system/
 	
 	# Control File
-	@echo "Package: $(APP_NAME)\nVersion: $(VERSION)\nSection: utils\nPriority: optional\nArchitecture: $(ARCH)\nMaintainer: Vyom <support@vyom.ai>\nDescription: Vyom Device Middleware\nDepends: gstreamer1.0-tools, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, v4l-utils, libcamera-apps, rpicam-apps" > $(PKG_DIR)/DEBIAN/control
+	@echo "Package: $(APP_NAME)\nVersion: $(VERSION)\nSection: utils\nPriority: optional\nArchitecture: $(ARCH)\nMaintainer: Vyom <support@vyom.ai>\nDescription: Vyom Device Middleware\nReplaces: vyom-middleware-local, vyom-middleware-rpi\nConflicts: vyom-middleware-local, vyom-middleware-rpi\nDepends: gstreamer1.0-tools, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, v4l-utils, libcamera-apps, rpicam-apps" > $(PKG_DIR)/DEBIAN/control
 	
 	# Post Inst
 	@echo "#!/bin/bash\nchmod +x /usr/local/bin/$(APP_NAME)\nchmod 755 /opt/vyom/ui\nsystemctl daemon-reload\nsystemctl enable $(APP_NAME)\nsystemctl restart $(APP_NAME)" > $(PKG_DIR)/DEBIAN/postinst
@@ -66,7 +66,7 @@ package-local: clean
 	cp vyom-middleware.service $(PKG_DIR)/etc/systemd/system/
 	
 	# Control File (AMD64, removed rpicam-apps dependency for local test)
-	@echo "Package: $(APP_NAME)\nVersion: $(VERSION)\nSection: utils\nPriority: optional\nArchitecture: amd64\nMaintainer: Vyom <support@vyom.ai>\nDescription: Vyom Device Middleware (Local)\nDepends: gstreamer1.0-tools, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav" > $(PKG_DIR)/DEBIAN/control
+	@echo "Package: $(APP_NAME)\nVersion: $(VERSION)\nSection: utils\nPriority: optional\nArchitecture: amd64\nMaintainer: Vyom <support@vyom.ai>\nDescription: Vyom Device Middleware (Local)\nReplaces: vyom-middleware-local, vyom-middleware-rpi\nConflicts: vyom-middleware-local, vyom-middleware-rpi\nDepends: gstreamer1.0-tools, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav" > $(PKG_DIR)/DEBIAN/control
 	
 	# Post Inst
 	@echo "#!/bin/bash\nchmod +x /usr/local/bin/$(APP_NAME)\nchmod 755 /opt/vyom/ui\nsystemctl daemon-reload\nsystemctl enable $(APP_NAME)\nsystemctl restart $(APP_NAME)" > $(PKG_DIR)/DEBIAN/postinst
