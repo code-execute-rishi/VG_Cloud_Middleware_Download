@@ -912,9 +912,22 @@ func handleSystemInfo(w http.ResponseWriter, r *http.Request) {
 
 func handleStatus(w http.ResponseWriter, r *http.Request) {
 	deviceStatusMutex.RLock()
-	defer deviceStatusMutex.RUnlock()
+	// Create a shallow copy to modify Auth URL without affecting global state
+	statusCopy := deviceStatus
+	deviceStatusMutex.RUnlock()
+
+	// Dynamic URL Generation based on User's Host
+	// This ensures that if user visits via ZeroTier IP, the callback redirects to ZeroTier IP.
+	if !statusCopy.IsConfigured {
+		host := r.Host
+		// Construct Callback: http://<Host>/claim
+		callbackURL := fmt.Sprintf("http://%s/claim", host)
+		// Final URL: <FrontendBase>/connect?callback=<Callback>
+		statusCopy.Auth.ConnectURL = fmt.Sprintf("%s/connect?callback=%s", FrontendBaseURL, callbackURL)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(deviceStatus)
+	json.NewEncoder(w).Encode(statusCopy)
 }
 
 func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
