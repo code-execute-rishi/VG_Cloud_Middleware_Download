@@ -46,3 +46,32 @@ package-rpi: clean
 	# Build Deb
 	dpkg-deb --build $(PKG_DIR) "$(APP_NAME)_$(VERSION)_$(ARCH).deb"
 	@echo "🎉 Package Created: $(APP_NAME)_$(VERSION)_$(ARCH).deb"
+
+package-local: clean
+	@echo "📦 Packaging for Local Machine (AMD64)..."
+	mkdir -p $(PKG_DIR)/usr/local/bin
+	mkdir -p $(PKG_DIR)/etc/systemd/system
+	mkdir -p $(PKG_DIR)/opt/vyom/ui
+	mkdir -p $(PKG_DIR)/DEBIAN
+	
+	# Build Binary
+	$(MAKE) build-local
+	mv $(APP_NAME) $(PKG_DIR)/usr/local/bin/
+	
+	# Build UI
+	cd ui && npm install && npm run build
+	cp -r ui/dist/* $(PKG_DIR)/opt/vyom/ui/
+	
+	# Config
+	cp vyom-middleware.service $(PKG_DIR)/etc/systemd/system/
+	
+	# Control File (AMD64, removed rpicam-apps dependency for local test)
+	@echo "Package: $(APP_NAME)\nVersion: $(VERSION)\nSection: utils\nPriority: optional\nArchitecture: amd64\nMaintainer: Vyom <support@vyom.ai>\nDescription: Vyom Device Middleware (Local)\nDepends: gstreamer1.0-tools, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav" > $(PKG_DIR)/DEBIAN/control
+	
+	# Post Inst
+	@echo "#!/bin/bash\nchmod +x /usr/local/bin/$(APP_NAME)\nchmod 755 /opt/vyom/ui\nsystemctl daemon-reload\nsystemctl enable $(APP_NAME)\nsystemctl restart $(APP_NAME)" > $(PKG_DIR)/DEBIAN/postinst
+	chmod 755 $(PKG_DIR)/DEBIAN/postinst
+	
+	# Build Deb
+	dpkg-deb --build $(PKG_DIR) "$(APP_NAME)_$(VERSION)_amd64.deb"
+	@echo "🎉 Package Created: $(APP_NAME)_$(VERSION)_amd64.deb"
