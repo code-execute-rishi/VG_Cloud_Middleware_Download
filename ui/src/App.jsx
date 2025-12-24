@@ -1,14 +1,26 @@
 import React, { useState, useEffect } from "react";
+import { HashRouter as Router, Routes, Route, useLocation } from "react-router-dom";
 import "./App.css";
-// import QRCode from "react-qr-code"; // Removed for v3
 import MJPEGStream from './components/MJPEGStream';
 import SystemHealth from './components/SystemHealth';
+import FlightController from './components/FlightController';
+import Sidebar from './components/Sidebar';
 
 function App() {
-  const [view, setView] = useState("dashboard"); // 'dashboard', 'camera', 'logs'
+  return (
+    <Router>
+      <AppContent />
+    </Router>
+  );
+}
+
+function AppContent() {
   const [status, setStatus] = useState(null);
   const [systemInfo, setSystemInfo] = useState(null);
   const [loading, setLoading] = useState(false);
+
+  // No longer needed for sidebar logic, but keeping for reference if needed
+  // const location = useLocation(); 
 
   // Form State
   const [formData, setFormData] = useState({
@@ -101,281 +113,312 @@ function App() {
     }
   };
 
-  if (!systemInfo) return <div className="container center-content"><div className="spinner"></div></div>;
+  if (!systemInfo) return <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center' }}><div className="spinner"></div></div>;
 
-  const isConfigured = status?.is_configured;
-  const isConnected = status?.is_connected;
   const isClaimed = status?.is_claimed;
-
-  // NOTE: If device is not CLAIMED, we force the Bind Screen (Setup), 
-  // even if it is technically configured (WiFi is set). 
-  // This allows the user to see the Pairing Code easily if they Unbound/Forgot it.
   const showSetup = !isClaimed;
 
   if (showSetup) {
-    // SETUP VIEW (Bind Flow)
+    // Setup View (No Sidebar) - Refined Premium Design
     return (
-      <div className="app-container">
-        <header className="top-bar">
-          <div className="logo-section">
-            <div className="logo-icon">📡</div>
-            <h1>Vyom Setup (v2.2)</h1>
-          </div>
-        </header>
+      <div className="app-container" style={{ justifyContent: 'center', alignItems: 'center', background: '#f8fafc', height: '100vh', width: '100vw' }}>
+        <div style={{ maxWidth: '440px', width: '100%', padding: '0 20px' }}>
 
-        <main className="main-content">
-          <div className="card bind-card">
-            <h2>Connect Device</h2>
-            <p>Link this device to your VG Cloud account</p>
+          <header style={{ marginBottom: '32px', textAlign: 'center' }}>
+            <h1 style={{ fontSize: '1.75rem', fontWeight: '700', color: '#0f172a', marginBottom: '8px', letterSpacing: '-0.025em' }}>Vyom Setup</h1>
+            <p style={{ color: '#64748b', fontSize: '1rem' }}>Connect your device to the cloud</p>
+          </header>
 
-            <div style={{ background: 'white', padding: '40px', borderRadius: '8px', margin: '20px 0', textAlign: 'center' }}>
-              {status?.auth_status?.connect_url ? (
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px' }}>
-                  <div className="pulse-ring" style={{ width: '80px', height: '80px', background: '#e0f2fe', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#0284c7', fontSize: '2rem' }}>
-                    🔗
-                  </div>
+          <div className="card bind-card" style={{ padding: '0', overflow: 'hidden', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)' }}>
 
-                  <a
-                    href={status.auth_status.connect_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="btn-primary"
-                    style={{
-                      textDecoration: 'none',
-                      fontSize: '1.2rem',
-                      padding: '16px 32px',
-                      background: 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)',
-                      boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)'
-                    }}
-                  >
-                    🚀 Connect Device
-                  </a>
+            {/* Top Blue Accent Bar */}
+            <div style={{ height: '4px', background: 'linear-gradient(to right, #2563eb, #3b82f6)' }}></div>
 
-                  <p style={{ fontSize: '0.9rem', color: '#64748b', maxWidth: '300px', lineHeight: '1.5' }}>
-                    Clicking this will open the VG Cloud dashboard to authorize this device.
-                  </p>
+            <div style={{ padding: '32px' }}>
+              <div style={{ marginBottom: '24px', textAlign: 'center' }}>
+                <h2 style={{ fontSize: '1.25rem', color: '#1e293b', marginBottom: '8px', border: 'none', padding: 0 }}>Connection</h2>
+                <div style={{ background: '#f8fafc', padding: '24px', borderRadius: '12px', border: '1px solid #e2e8f0', marginTop: '16px' }}>
+
+                  {status?.auth_status?.connect_url ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
+                      <a
+                        href={status.auth_status.connect_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="btn-primary"
+                        style={{
+                          textDecoration: 'none',
+                          fontSize: '1rem',
+                          padding: '12px 24px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          width: '100%',
+                          fontWeight: '600'
+                        }}
+                      >
+                        Connect Device
+                      </a>
+                      <p style={{ fontSize: '0.875rem', color: '#64748b', margin: 0 }}>
+                        Click to authorize via Cloud Dashboard
+                      </p>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '20px' }}>
+                      <div className="spinner"></div>
+                      <p style={{ marginTop: '12px', color: '#64748b', fontSize: '0.875rem' }}>Preparing Setup...</p>
+                    </div>
+                  )}
                 </div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                  <div className="spinner"></div>
-                  <p style={{ marginTop: '10px', color: '#666' }}>Fetching Setup URL...</p>
-                </div>
-              )}
-            </div>
+              </div>
 
-            <hr style={{ width: '100%', borderColor: '#eee', margin: '20px 0' }} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', margin: '24px 0' }}>
+                <div style={{ height: '1px', flex: 1, background: '#e2e8f0' }}></div>
+                <span style={{ fontSize: '0.75rem', color: '#94a3b8', fontWeight: '600', textTransform: 'uppercase' }}>Config</span>
+                <div style={{ height: '1px', flex: 1, background: '#e2e8f0' }}></div>
+              </div>
 
-            <h3>WiFi Settings</h3>
-            <div className="form-group" style={{ width: '100%', textAlign: 'left' }}>
-              <label>WiFi SSID</label>
-              <input
-                type="text" value={formData.ssid}
-                onChange={(e) => setFormData({ ...formData, ssid: e.target.value })}
-                placeholder="SSID"
-              />
-            </div>
-            <div className="form-group" style={{ width: '100%', textAlign: 'left' }}>
-              <label>Password</label>
-              <input
-                type="password" value={formData.password}
-                onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                placeholder="Password"
-              />
-            </div>
+              <div className="form-group custom-input" style={{ marginBottom: '16px' }}>
+                <label style={{ fontSize: '0.875rem', fontWeight: '600', color: '#334155', marginBottom: '6px' }}>WiFi SSID</label>
+                <input
+                  type="text" value={formData.ssid}
+                  onChange={(e) => setFormData({ ...formData, ssid: e.target.value })}
+                  placeholder="Network Name"
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '0.95rem' }}
+                />
+              </div>
+              <div className="form-group custom-input" style={{ marginBottom: '24px' }}>
+                <label style={{ fontSize: '0.875rem', fontWeight: '600', color: '#334155', marginBottom: '6px' }}>Password</label>
+                <input
+                  type="password" value={formData.password}
+                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                  placeholder="Network Password"
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '0.95rem' }}
+                />
+              </div>
 
-            <button className="btn-primary" onClick={handleBind} disabled={loading}>
-              {loading ? "Saving..." : "Update WiFi"}
-            </button>
+              <button className="btn-secondary" onClick={handleBind} disabled={loading} style={{ width: '100%', padding: '10px', fontWeight: '600', color: '#334155', background: '#f1f5f9', border: '1px solid #cbd5e1' }}>
+                {loading ? "Saving Configuration..." : "Save WiFi Settings"}
+              </button>
+            </div>
           </div>
-        </main>
+
+          <div style={{ textAlign: 'center', marginTop: '24px' }}>
+            <p style={{ color: '#94a3b8', fontSize: '0.8rem' }}>Vyom Device Middleware v2.5.0</p>
+          </div>
+        </div>
       </div>
     );
   }
 
-  // DASHBOARD VIEW (Claimed)
+  // APP VIEW (Claimed) - Sidebar Layout
   return (
     <div className="app-container">
-      <header className="top-bar">
-        <div className="logo-section">
-          <div className="logo-icon green">✔️</div>
-          <div className="logo-text">
-            <h1>Device Active</h1>
-            <p className="subtitle">ID: {systemInfo.device_id}</p>
-          </div>
-        </div>
-        <div className="nav-tabs">
-          <button
-            className={`nav-tab ${view === 'dashboard' ? 'active' : ''}`}
-            onClick={() => setView('dashboard')}
-          >
-            Dashboard
-          </button>
-          <button
-            className={`nav-tab ${view === 'camera' ? 'active' : ''}`}
-            onClick={() => setView('camera')}
-          >
-            FC/Camera Settings
-          </button>
-          <button
-            className={`nav-tab ${view === 'logs' ? 'active' : ''}`}
-            onClick={() => setView('logs')}
-          >
-            System Logs
-          </button>
-        </div>
-      </header>
+      <Sidebar
+        systemInfo={systemInfo}
+        isClaimed={status?.is_claimed}
+        isConnected={status?.is_connected}
+        userInfo={status?.user_info}
+      />
 
       <main className="main-content">
-        {view === 'dashboard' && (
-          <div className="card">
-            <h2>System Status</h2>
-            <div className="status-grid">
-              <StatusItem label="Internet" value="Online" active={true} />
-              <StatusItem label="Cloud Link" value={isConnected ? "Connected" : "Connecting..."} active={isConnected} />
-              <StatusItem label="Ownership" value="Claimed" active={true} />
-            </div>
-          </div>
-        )}
-
-        {view === 'dashboard' && (
-          <NetworkStatusCard status={status} />
-        )}
-
-        {view === 'camera' && (
-          <div className="card">
-
-            <SystemHealth
-              fcConnected={status?.hardware_status?.fc_connected}
-              camConnected={status?.hardware_status?.cam_connected}
-            />
-
-            <h3>Local Camera Stream</h3>
-            <div className="stream-container" style={{ marginBottom: '20px', background: '#000', borderRadius: '8px', overflow: 'hidden', minHeight: '300px' }}>
-              <MJPEGStream
-                src="/api/stream"
-                alt="Local Stream"
-              />
-            </div>
-
-            {/* Camera Config Section */}
-            <h3>Camera Settings</h3>
-            <div style={{ display: 'flex', gap: '15px', marginBottom: '0px' }}>
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>Camera Device</label>
-                <select
-                  value={formData.camera_device}
-                  onChange={(e) => setFormData({ ...formData, camera_device: e.target.value })}
-                >
-                  <option value="auto">Auto Detection</option>
-                  {cameras && cameras.map(cam => (
-                    <option key={cam} value={cam}>{cam}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>Camera Type</label>
-                <select
-                  value={formData.camera_type}
-                  onChange={(e) => setFormData({ ...formData, camera_type: e.target.value })}
-                >
-                  <option value="auto">Auto Detect</option>
-                  <option value="csi">CSI Ribbon Cable (RPi)</option>
-                  <option value="usb">USB Camera</option>
-                </select>
-              </div>
-            </div>
-
-            <div className="form-group">
-              <label>Camera Resolution</label>
-              <select
-                value={formData.resolution}
-                onChange={(e) => setFormData({ ...formData, resolution: e.target.value })}
-              >
-                <option value="640x480">480p</option>
-                <option value="1280x720">720p</option>
-                <option value="1920x1080">1080p</option>
-              </select>
-            </div>
-
-            {/* Flight Controller Section */}
-            <h3 style={{ marginTop: '2rem' }}>Flight Controller</h3>
-
-            {/* FC Status Info */}
-            <div className="card" style={{ padding: '1rem', marginBottom: '1.5rem', background: '#fbfbfd', border: '1px solid #eee' }}>
-              <div className="info-row" style={{ justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-                <span className="info-label">Connection Status</span>
-                {status?.hardware_status?.fc_connected ? (
-                  <span className="tag connected">Connected</span>
-                ) : (
-                  <span className="tag" style={{ color: 'red', background: '#ffebeb' }}>Disconnected</span>
-                )}
-              </div>
-              {status?.hardware_status?.fc_connected && (
-                <>
-                  <div className="info-row" style={{ justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-                    <span className="info-label">Autopilot Type</span>
-                    <span className="info-value">{status?.hardware_status?.fc_type || "Unknown"}</span>
-                  </div>
-                  <div className="info-row" style={{ justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-                    <span className="info-label">Firmware</span>
-                    <span className="info-value">{status?.hardware_status?.fc_firmware || "Unknown"}</span>
-                  </div>
-                  <div className="info-row" style={{ justifyContent: 'space-between' }}>
-                    <span className="info-label">Current Port</span>
-                    <span className="info-value code">{status?.hardware_status?.current_port}</span>
-                  </div>
-                </>
-              )}
-            </div>
-
-            <div style={{ display: 'flex', gap: '15px' }}>
-              <div className="form-group" style={{ flex: 2 }}>
-                <label>Serial Port</label>
-                <select
-                  value={formData.fc_port}
-                  onChange={(e) => setFormData({ ...formData, fc_port: e.target.value })}
-                >
-                  <option value="auto">Auto-Detect (Recommended)</option>
-                  {serialPorts && serialPorts.map(port => (
-                    <option key={port} value={port}>{port}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="form-group" style={{ flex: 1 }}>
-                <label>Baud Rate</label>
-                <select
-                  value={formData.fc_baud}
-                  onChange={(e) => setFormData({ ...formData, fc_baud: parseInt(e.target.value) })}
-                >
-                  <option value="57600">57600 (Telemetry)</option>
-                  <option value="115200">115200 (Default)</option>
-                  <option value="921600">921600 (High Speed)</option>
-                </select>
-              </div>
-            </div>
-
-            <button className="btn-primary" onClick={handleUpdateConfig} disabled={loading}>
-              {loading ? "Updating..." : "Update Settings"}
-            </button>
-          </div>
-        )}
-
-        {view === 'logs' && (
-          <div className="card">
-            <h2>System Logs</h2>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '10px' }}>
-              <a href="/api/logs?download=true" className="btn-small" target="_blank" rel="noopener noreferrer">
-                Download Logs
-              </a>
-            </div>
-            <LogsViewer />
-          </div>
-        )}
-
+        <Routes>
+          <Route path="/" element={<DashboardView status={status} isConnected={status?.is_connected} />} />
+          <Route path="/camera" element={<CameraSettingsView status={status} formData={formData} setFormData={setFormData} cameras={cameras} serialPorts={serialPorts} handleUpdateConfig={handleUpdateConfig} loading={loading} />} />
+          <Route path="/logs" element={<LogsView />} />
+          <Route path="/flight-controller" element={<FlightController />} />
+        </Routes>
       </main>
     </div>
   );
 }
+
+// VIEW COMPONENTS
+
+const DashboardView = ({ status, isConnected }) => {
+  const lk = status?.livekit_status || {};
+  const zt = status?.zerotier_status || {};
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+
+      {/* KPI Stats Row */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '20px' }}>
+        <div className="card" style={{ padding: '1.2rem', display: 'flex', alignItems: 'center', gap: '15px' }}>
+          <div style={{ width: '48px', height: '48px', borderRadius: '12px', background: '#dcfce7', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#16a34a' }}>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><line x1="2" y1="12" x2="22" y2="12" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" /></svg>
+          </div>
+          <div>
+            <div style={{ fontSize: '0.85rem', color: '#64748b', fontWeight: 'bold', textTransform: 'uppercase' }}>Internet</div>
+            <div style={{ fontSize: '1.2rem', fontWeight: '700', color: '#0f172a' }}>Online</div>
+          </div>
+        </div>
+
+        <div className="card" style={{ padding: '1.2rem', display: 'flex', alignItems: 'center', gap: '15px' }}>
+          <div style={{ width: '48px', height: '48px', borderRadius: '12px', background: isConnected ? '#e0f2fe' : '#fef2f2', display: 'flex', alignItems: 'center', justifyContent: 'center', color: isConnected ? '#0284c7' : '#ef4444' }}>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17.5 19c0-3.037-2.463-5.5-5.5-5.5S6.5 15.963 6.5 19" /><path d="M19 16c2.5-1 3.2-3.8 2.5-6.3-.5-1.9-2.3-3.2-4.2-3.1C16.9 3.8 14.3 2 11.5 2.5c-2.4.4-4.2 2.3-4.6 4.7C4.6 7.6 2.6 9 1 9" /></svg>
+          </div>
+          <div>
+            <div style={{ fontSize: '0.85rem', color: '#64748b', fontWeight: 'bold', textTransform: 'uppercase' }}>Cloud Link</div>
+            <div style={{ fontSize: '1.2rem', fontWeight: '700', color: '#0f172a' }}>{isConnected ? "Connected" : "Disconnected"}</div>
+          </div>
+        </div>
+
+        <div className="card" style={{ padding: '1.2rem', display: 'flex', alignItems: 'center', gap: '15px' }}>
+          <div style={{ width: '48px', height: '48px', borderRadius: '12px', background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#475569' }}>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
+          </div>
+          <div>
+            <div style={{ fontSize: '0.85rem', color: '#64748b', fontWeight: 'bold', textTransform: 'uppercase' }}>Ownership</div>
+            <div style={{ fontSize: '1.2rem', fontWeight: '700', color: '#0f172a' }}>Claimed</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Network & System Grid */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)', gap: '20px' }}>
+
+        {/* Left Col: Network Details */}
+        <div className="card">
+          <h2>Network Health</h2>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+            {/* LiveKit */}
+            <div style={{ background: '#f8fafc', padding: '1.5rem', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+                <h3 style={{ margin: 0, fontSize: '1rem' }}>LiveKit Video</h3>
+                <span className={`tag ${lk.state === 'Connected' ? 'connected' : 'disconnected'}`}>{lk.state || 'Disconnected'}</span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <div className="info-row" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span className="info-label" style={{ color: '#64748b' }}>Room Name</span>
+                  <span className="code">{lk.room_name || "-"}</span>
+                </div>
+                <div className="info-row" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span className="info-label" style={{ color: '#64748b' }}>Participants</span>
+                  <span style={{ fontWeight: '700' }}>{lk.participants || 0}</span>
+                </div>
+                {lk.last_error && <div style={{ color: '#ef4444', fontSize: '0.85rem', marginTop: '5px' }}>{lk.last_error}</div>}
+              </div>
+            </div>
+
+            {/* ZeroTier */}
+            <div style={{ background: '#f8fafc', padding: '1.5rem', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+                <h3 style={{ margin: 0, fontSize: '1rem' }}>ZeroTier VPN</h3>
+                <span className={`tag ${zt.state === 'Connected' ? 'connected' : 'disconnected'}`}>{zt.state || 'Disconnected'}</span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <div className="info-row" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span className="info-label" style={{ color: '#64748b' }}>Managed IP</span>
+                  <span className="code">{zt.ip_address || "-"}</span>
+                </div>
+                {zt.last_error && <div style={{ color: '#ef4444', fontSize: '0.85rem', marginTop: '5px' }}>{zt.last_error}</div>}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Right Col: System Health */}
+        <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
+          <h2>System Status</h2>
+          <div style={{ flex: 1 }}>
+            <SystemHealth
+              fcConnected={status?.hardware_status?.fc_connected}
+              camConnected={status?.hardware_status?.cam_connected}
+            />
+          </div>
+        </div>
+
+      </div>
+    </div>
+  );
+};
+
+const CameraSettingsView = ({ status, formData, setFormData, cameras, serialPorts, handleUpdateConfig, loading }) => (
+  <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+    {/* Top Section: Health & Stream */}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      {/* System Health Full Width */}
+      <div className="card" style={{ padding: '1rem' }}>
+        <h2 style={{ border: 'none', padding: 0, marginBottom: '0.5rem', fontSize: '1rem', textTransform: 'uppercase', color: '#64748b' }}>System Overview</h2>
+        <SystemHealth
+          fcConnected={status?.hardware_status?.fc_connected}
+          camConnected={status?.hardware_status?.cam_connected}
+        />
+      </div>
+
+      {/* Stream & Settings Grid */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.5fr) minmax(0, 1fr)', gap: '20px' }}>
+        <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
+          <h2>Local Camera Stream</h2>
+          <div className="stream-container" style={{ flex: 1, background: '#000', borderRadius: '8px', overflow: 'hidden', minHeight: '300px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <MJPEGStream src="/api/stream" alt="Local Stream" />
+          </div>
+        </div>
+
+        <div className="card">
+          <h2>Configuration</h2>
+          <h3>Camera Settings</h3>
+          <div style={{ display: 'flex', gap: '15px', marginBottom: '15px' }}>
+            <div className="form-group" style={{ flex: 1 }}>
+              <label>Camera Device</label>
+              <select
+                value={formData.camera_device}
+                onChange={(e) => setFormData({ ...formData, camera_device: e.target.value })}
+              >
+                <option value="auto">Auto Detection</option>
+                {cameras && cameras.map(cam => (
+                  <option key={cam} value={cam}>{cam}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="form-group">
+            <label>Camera Type</label>
+            <select
+              value={formData.camera_type}
+              onChange={(e) => setFormData({ ...formData, camera_type: e.target.value })}
+            >
+              <option value="auto">Auto Detect</option>
+              <option value="csi">CSI Ribbon Cable (RPi)</option>
+              <option value="usb">USB Camera</option>
+            </select>
+          </div>
+
+          <div className="form-group">
+            <label>Camera Resolution</label>
+            <select
+              value={formData.resolution}
+              onChange={(e) => setFormData({ ...formData, resolution: e.target.value })}
+            >
+              <option value="640x480">480p</option>
+              <option value="1280x720">720p</option>
+              <option value="1920x1080">1080p</option>
+            </select>
+          </div>
+
+          <div style={{ textAlign: 'right', marginTop: '20px' }}>
+            <button className="btn-primary" onClick={handleUpdateConfig} disabled={loading}>
+              {loading ? "Updating..." : "Update Settings"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+);
+
+const LogsView = () => (
+  <div className="card" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+      <h2 style={{ margin: 0, border: 'none', padding: 0 }}>System Logs</h2>
+      <a href="/api/logs?download=true" className="btn-small" target="_blank" rel="noopener noreferrer">
+        Download Logs
+      </a>
+    </div>
+    <LogsViewer />
+  </div>
+);
 
 const StatusItem = ({ label, value, active, warned }) => (
   <div className="status-item">
@@ -401,24 +444,22 @@ const LogsViewer = () => {
 
   return (
     <div style={{
-      background: '#1a1a1a',
-      color: '#00ff00',
+      background: '#0f172a',
+      color: '#22c55e',
       padding: '15px',
       borderRadius: '8px',
       fontFamily: 'source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace',
       fontSize: '13px',
       lineHeight: '1.5',
-      height: '500px',
+      flex: 1,
       overflow: 'auto',
-      whiteSpace: 'pre',
-      border: '1px solid #333'
+      whiteSpace: 'pre-wrap',
+      border: '1px solid #334155'
     }}>
       {logs}
     </div>
   );
 };
-
-
 
 const NetworkStatusCard = ({ status }) => {
   const lk = status?.livekit_status || {};
@@ -428,54 +469,60 @@ const NetworkStatusCard = ({ status }) => {
     <div className="card">
       <h2>Network Health</h2>
 
-      {/* LiveKit Section */}
-      <h3 style={{ marginTop: '1rem', fontSize: '1rem', color: '#666' }}>LiveKit (Video/Control)</h3>
-      <div style={{ background: '#fbfbfd', padding: '1rem', borderRadius: '8px', border: '1px solid #eee' }}>
-        <div className="info-row" style={{ justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-          <span className="info-label">Status</span>
-          {lk.state === 'Connected' ? (
-            <span className="tag connected">Connected</span>
-          ) : (
-            <span className="tag" style={{ color: 'red', background: '#ffebeb' }}>{lk.state || "Disconnected"}</span>
-          )}
-        </div>
-        <div className="info-row" style={{ justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-          <span className="info-label">Room</span>
-          <span className="info-value code">{lk.room_name || "-"}</span>
-        </div>
-        <div className="info-row" style={{ justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-          <span className="info-label">Peers</span>
-          <span className="info-value">{lk.participants || 0}</span>
-        </div>
-        {lk.last_error && (
-          <div className="info-row" style={{ justifyContent: 'space-between', color: 'red' }}>
-            <span className="info-label" style={{ color: 'red' }}>Error</span>
-            <span className="info-value">{lk.last_error}</span>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+        {/* LiveKit Section */}
+        <div>
+          <h3 style={{ marginTop: '0', fontSize: '0.9rem', color: '#64748b', textTransform: 'uppercase' }}>LiveKit (Video/Control)</h3>
+          <div style={{ background: '#f8fafc', padding: '1rem', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+            <div className="info-row" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+              <span className="info-label" style={{ fontSize: '0.85rem', color: '#64748b' }}>Status</span>
+              {lk.state === 'Connected' ? (
+                <span className="tag connected">Connected</span>
+              ) : (
+                <span className="tag" style={{ color: '#ef4444', background: '#fee2e2' }}>{lk.state || "Disconnected"}</span>
+              )}
+            </div>
+            <div className="info-row" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+              <span className="info-label" style={{ fontSize: '0.85rem', color: '#64748b' }}>Room</span>
+              <span className="info-value code">{lk.room_name || "-"}</span>
+            </div>
+            <div className="info-row" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+              <span className="info-label" style={{ fontSize: '0.85rem', color: '#64748b' }}>Peers</span>
+              <span className="info-value" style={{ fontWeight: 'bold' }}>{lk.participants || 0}</span>
+            </div>
+            {lk.last_error && (
+              <div className="info-row" style={{ display: 'flex', justifyContent: 'space-between', color: '#ef4444' }}>
+                <span className="info-label" style={{ color: '#ef4444' }}>Error</span>
+                <span className="info-value">{lk.last_error}</span>
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        </div>
 
-      {/* ZeroTier Section */}
-      <h3 style={{ marginTop: '1.5rem', fontSize: '1rem', color: '#666' }}>ZeroTier (VPN)</h3>
-      <div style={{ background: '#fbfbfd', padding: '1rem', borderRadius: '8px', border: '1px solid #eee' }}>
-        <div className="info-row" style={{ justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-          <span className="info-label">Status</span>
-          {zt.state === 'Connected' ? (
-            <span className="tag connected">Connected</span>
-          ) : (
-            <span className="tag" style={{ color: 'red', background: '#ffebeb' }}>{zt.state || "Disconnected"}</span>
-          )}
-        </div>
-        <div className="info-row" style={{ justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-          <span className="info-label">IP Address</span>
-          <span className="info-value code">{zt.ip_address || "-"}</span>
-        </div>
-        {zt.last_error && (
-          <div className="info-row" style={{ justifyContent: 'space-between', color: 'red' }}>
-            <span className="info-label" style={{ color: 'red' }}>Error</span>
-            <span className="info-value">{zt.last_error}</span>
+        {/* ZeroTier Section */}
+        <div>
+          <h3 style={{ marginTop: '0', fontSize: '0.9rem', color: '#64748b', textTransform: 'uppercase' }}>ZeroTier (VPN)</h3>
+          <div style={{ background: '#f8fafc', padding: '1rem', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+            <div className="info-row" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+              <span className="info-label" style={{ fontSize: '0.85rem', color: '#64748b' }}>Status</span>
+              {zt.state === 'Connected' ? (
+                <span className="tag connected">Connected</span>
+              ) : (
+                <span className="tag" style={{ color: '#ef4444', background: '#fee2e2' }}>{zt.state || "Disconnected"}</span>
+              )}
+            </div>
+            <div className="info-row" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+              <span className="info-label" style={{ fontSize: '0.85rem', color: '#64748b' }}>IP Address</span>
+              <span className="info-value code">{zt.ip_address || "-"}</span>
+            </div>
+            {zt.last_error && (
+              <div className="info-row" style={{ display: 'flex', justifyContent: 'space-between', color: '#ef4444' }}>
+                <span className="info-label" style={{ color: '#ef4444' }}>Error</span>
+                <span className="info-value">{zt.last_error}</span>
+              </div>
+            )}
           </div>
-        )}
+        </div>
       </div>
     </div>
   );

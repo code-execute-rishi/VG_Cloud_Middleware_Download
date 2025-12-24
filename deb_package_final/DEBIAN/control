@@ -2,10 +2,9 @@ Package: vyom-middleware
 Version: 2.5.0
 Section: utils
 Priority: optional
-Architecture: arm64
+Architecture: amd64
 Maintainer: Vyom <support@vyom.ai>
-Description: Vyom Device Middleware (Raspberry Pi Edition)
- Key bridge between Pixhawk, Camera, and Vyom Cloud.
- Auto-detects hardware and manages telemetry.
- Optimized for Raspberry Pi.
-Depends: gstreamer1.0-tools, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, v4l-utils, libcamera-apps, rpicam-apps
+Description: Vyom Device Middleware (Local)
+Replaces: vyom-middleware-local, vyom-middleware-rpi
+Conflicts: vyom-middleware-local, vyom-middleware-rpi
+Depends: gstreamer1.0-tools, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav

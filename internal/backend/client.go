@@ -243,17 +243,23 @@ func (c *BackendClient) doRequest(req *http.Request, target interface{}) error {
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode == 401 { // Check for forgotten
-			if strings.Contains(string(respBody), "Unauthorized") {
+		respBodyStr := string(respBody)
+
+		// Only treat as DEVICE_FORGOTTEN if it's a genuine "device doesn't exist" error
+		// Don't confuse configuration errors (like missing LiveKit creds) with forgotten devices
+		if resp.StatusCode == 401 {
+			if strings.Contains(respBodyStr, "Unauthorized") && strings.Contains(respBodyStr, "Device") {
 				return fmt.Errorf("DEVICE_FORGOTTEN")
 			}
 		}
 		if resp.StatusCode == 404 {
-			if strings.Contains(string(respBody), "Device doesn't exist") || strings.Contains(string(respBody), "Not Found") {
+			// Only if the error explicitly mentions device not existing
+			if strings.Contains(respBodyStr, "Device doesn't exist") || strings.Contains(respBodyStr, "device not found") {
 				return fmt.Errorf("DEVICE_FORGOTTEN")
 			}
+			// Don't treat "LiveKit credentials not configured" as DEVICE_FORGOTTEN
 		}
-		return fmt.Errorf("API Error %d: %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("API Error %d: %s", resp.StatusCode, respBodyStr)
 	}
 
 	if target != nil {

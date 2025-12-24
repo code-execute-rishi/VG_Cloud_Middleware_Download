@@ -1,62 +1,39 @@
 import React from 'react';
 
-const SystemHealth = ({ fcConnected, camConnected, lastHeartbeat }) => {
-    return (
-        <div className="status-grid glass-panel" style={{ marginTop: '1rem', padding: '1rem' }}>
-            <h3 style={{ margin: '0 0 1rem 0', color: '#888', textTransform: 'uppercase', fontSize: '0.8rem', letterSpacing: '1px' }}>
-                System Health
-            </h3>
-
-            {/* Flight Controller Row */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.8rem' }}>
-                <span style={{ color: '#ccc' }}>Flight Controller</span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <span style={{ fontSize: '0.8rem', color: fcConnected ? '#10b981' : '#ef4444' }}>
-                        {fcConnected ? 'CONNECTED' : 'NO HEARTBEAT'}
-                    </span>
-                    <div className={`status-dot ${fcConnected ? 'pulsing' : 'red'}`} />
-                </div>
-            </div>
-
-            {/* Camera Row */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ color: '#ccc' }}>Camera Feed</span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <span style={{ fontSize: '0.8rem', color: camConnected ? '#10b981' : '#ef4444' }}>
-                        {camConnected ? 'ACTIVE' : 'NOT DETECTED'}
-                    </span>
-                    <div className={`status-dot ${camConnected ? 'pulsing' : 'red'}`} />
-                </div>
-            </div>
-
-            <style>{`
-        .glass-panel {
-          background: rgba(0, 0, 0, 0.4);
-          backdrop-filter: blur(10px);
-          border: 1px solid rgba(255, 255, 255, 0.05);
-          border-radius: 12px;
-        }
-        .status-dot {
-          width: 8px;
-          height: 8px;
-          border-radius: 50%;
-        }
-        .status-dot.pulsing {
-          background-color: #10b981;
-          box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
-          animation: pulse-green 2s infinite;
-        }
-        .status-dot.red {
-          background-color: #ef4444;
-        }
-        @keyframes pulse-green {
-          0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
-          70% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
-          100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
-        }
-      `}</style>
+const SystemHealth = ({ fcConnected, camConnected }) => {
+  return (
+    <div style={{ padding: '0', width: '100%', boxSizing: 'border-box' }}>
+      {/* Flight Controller Row */}
+      <div style={{ background: '#f8fafc', padding: '1rem', borderRadius: '8px', border: '1px solid #e2e8f0', marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div style={{ color: '#64748b' }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 2l-7 20-4-9-9-4 20-7z"></path></svg>
+          </div>
+          <span style={{ fontSize: '0.9rem', color: '#64748b', fontWeight: '500' }}>Flight Controller</span>
         </div>
-    );
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <span className={`tag ${fcConnected ? 'connected' : 'disconnected'}`}>
+            {fcConnected ? 'CONNECTED' : 'DISCONNECTED'}
+          </span>
+        </div>
+      </div>
+
+      {/* Camera Row */}
+      <div style={{ background: '#f8fafc', padding: '1rem', borderRadius: '8px', border: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div style={{ color: '#64748b' }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" /><circle cx="12" cy="13" r="4" /></svg>
+          </div>
+          <span style={{ fontSize: '0.9rem', color: '#64748b', fontWeight: '500' }}>Camera Feed</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <span className={`tag ${camConnected ? 'connected' : 'disconnected'}`}>
+            {camConnected ? 'ACTIVE' : 'INACTIVE'}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
 };
 
 export default SystemHealth;
