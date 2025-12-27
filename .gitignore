@@ -42,3 +42,4 @@ package-lock.json
 device-middleware_deleted_version/
 backend_logs.txt
 *.db
+vyom-api
