@@ -43,3 +43,4 @@ device-middleware_deleted_version/
 backend_logs.txt
 *.db
 vyom-api
+device-middleware/bin/
