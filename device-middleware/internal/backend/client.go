@@ -196,6 +196,84 @@ func (c *BackendClient) GetZeroTierConfig(deviceID string) (*ZerotierConfigRespo
 	return &res, nil
 }
 
+func (c *BackendClient) UpdateNodeID(deviceID, nodeID string) error {
+	url := fmt.Sprintf("/api/v1/devices/%s/node-id", deviceID)
+	payload := map[string]string{"node_id": nodeID}
+
+	// Create Custom Request for PATCH
+	jsonPayload, _ := json.Marshal(payload)
+	req, err := http.NewRequest("PATCH", c.BaseURL+url, bytes.NewBuffer(jsonPayload))
+	if err != nil {
+		return err
+	}
+	// Add Auth
+	if c.Identity != nil {
+		req.Header.Set("Authorization", "Bearer "+c.Identity.Token)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("API Error %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func (c *BackendClient) SaveZeroTierConfig(ip string) error {
+	if c.Identity == nil {
+		return fmt.Errorf("no identity")
+	}
+	url := fmt.Sprintf("/api/v1/devices/%s/zerotier", c.Identity.DeviceID)
+	payload := map[string]string{"zerotier_ip": ip}
+	return c.post(url, payload, nil)
+}
+
+// TelemetryEndpoint matches the backend model
+type TelemetryEndpoint struct {
+	ID              string `json:"id"`
+	DeviceID        string `json:"device_id"`
+	Name            string `json:"name"`
+	Host            string `json:"host"`
+	TelemetryPort   int    `json:"telemetry_port"`
+	VideoPort       *int   `json:"video_port,omitempty"`
+	EnableTelemetry bool   `json:"enable_telemetry"`
+	EnableVideo     bool   `json:"enable_video"`
+	Enabled         bool   `json:"enabled"`
+}
+
+func (c *BackendClient) GetTelemetryEndpoints() ([]TelemetryEndpoint, error) {
+	if c.Identity == nil {
+		return nil, fmt.Errorf("no identity")
+	}
+	url := fmt.Sprintf("%s/api/v1/devices/%s/telemetry-endpoints", c.BaseURL, c.Identity.DeviceID)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Identity.Token)
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API Error %d", resp.StatusCode)
+	}
+
+	var endpoints []TelemetryEndpoint
+	if err := json.NewDecoder(resp.Body).Decode(&endpoints); err != nil {
+		return nil, err
+	}
+	return endpoints, nil
+}
+
 // --- Helper ---
 
 func (c *BackendClient) post(path string, payload interface{}, target interface{}) error {

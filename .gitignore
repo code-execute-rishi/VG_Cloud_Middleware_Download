@@ -37,3 +37,8 @@ add_swap_and_deploy.sh
 drone_camera_sender.html
 package.json
 package-lock.json
+
+# Cleanup
+device-middleware_deleted_version/
+backend_logs.txt
+*.db

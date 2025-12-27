@@ -27,6 +27,7 @@ import (
 	"device-middleware/internal/auth"
 	"device-middleware/internal/backend"
 	"device-middleware/internal/camera"
+	"device-middleware/internal/gcs"
 )
 
 // --- Configuration Constants ---
@@ -38,7 +39,7 @@ const (
 
 var (
 	BackendBaseURL  = backend.DefaultBaseURL
-	FrontendBaseURL = "https://middleware-gcs-assigment.vercel.app" // Default Frontend
+	FrontendBaseURL = "https://internetlinkpro.vyomgarud.com" // Default Frontend
 )
 
 func init() {
@@ -213,6 +214,9 @@ var (
 	// Global Video Relay
 	videoRelay      *VideoRelay
 	videoRelayMutex sync.RWMutex
+
+	// GCS Forwarder
+	gcsForwarder *gcs.Forwarder
 )
 
 type VideoRelay struct {
@@ -283,6 +287,9 @@ func main() {
 	// Cleanup port 8085 if blocked (SetupPort)
 	CleanupPort(8085)
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	resetFlag := flag.Bool("reset", false, "Reset configuration and identity")
 	flag.Parse()
 
@@ -312,6 +319,32 @@ func main() {
 	// 1.5 Start Global Video Relay (Keeps GStreamer Happy)
 	go startVideoRelayServer()
 
+	// 1.6 Init GCS Forwarder (UDP Proxy on localhost:14555)
+	gcsForwarder = gcs.NewForwarder("127.0.0.1:14555")
+
+	// 1.7 Start ZeroTier & GCS Maintenance Loop
+	go func() {
+		ztTicker := time.NewTicker(20 * time.Second)
+		gcsTicker := time.NewTicker(10 * time.Second)
+		defer ztTicker.Stop()
+		defer gcsTicker.Stop()
+
+		// Initial checks
+		ensureZeroTierConnection(apiClient)
+		syncGCSEndpoints(apiClient)
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ztTicker.C:
+				ensureZeroTierConnection(apiClient)
+			case <-gcsTicker.C:
+				syncGCSEndpoints(apiClient)
+			}
+		}
+	}()
+
 	// 2. Start Persistent Web Server (For UI and Setup)
 	go startWebServer()
 
@@ -332,7 +365,14 @@ func startWebServer() {
 	mux.HandleFunc("/api/wifi-scan", handleWifiScan)
 	mux.HandleFunc("/api/save-config", handleSaveConfig)
 	mux.HandleFunc("/api/logs", handleLogs)
+
 	mux.HandleFunc("/api/stream", handleLocalStream)
+	mux.HandleFunc("/api/cameras", handleCameras)
+
+	// GCS API
+	mux.HandleFunc("/api/gcs/endpoints", handleGCSEndpoints)
+	mux.HandleFunc("/api/gcs/endpoints/delete", handleGCSEndpointDelete) // Query param id
+	mux.HandleFunc("/api/gcs/endpoints/toggle", handleGCSEndpointToggle) // Query param id&enabled
 
 	// Determine UI Directory
 	uiDir := "./ui/dist"
@@ -603,13 +643,20 @@ func telemetryAndClaimLoop(client *backend.BackendClient, config ConfigFile) {
 
 	if fcPort == "auto" {
 		log.Println("[Hardware] Auto-Detecting Flight Controller...")
+		log.Println("[DEBUG] Listing /dev files...")
 		// 1. Search for Serial Ports
-		files, _ := os.ReadDir("/dev")
+		files, err := os.ReadDir("/dev")
+		if err != nil {
+			log.Printf("[DEBUG] Error reading /dev: %v", err)
+		}
+
 		var foundPort string
 		for _, f := range files {
 			if strings.HasPrefix(f.Name(), "ttyACM") || strings.HasPrefix(f.Name(), "ttyUSB") {
-				foundPort = "/dev/" + f.Name()
-				break
+				log.Printf("[DEBUG] Found potential device: %s", f.Name())
+				if foundPort == "" {
+					foundPort = "/dev/" + f.Name()
+				}
 			}
 		}
 
@@ -639,6 +686,12 @@ func telemetryAndClaimLoop(client *backend.BackendClient, config ConfigFile) {
 				gomavlib.EndpointSerial{Device: fcPort, Baud: fcBaud},
 			}
 		}
+	}
+
+	// Add GCS Forwarder Proxy as an Endpoint
+	// gomavlib sends data to this address, and forwarder fans it out.
+	if gcsForwarder != nil {
+		endpoints = append(endpoints, gomavlib.EndpointUDPClient{Address: "127.0.0.1:14555"})
 	}
 
 	node, err = gomavlib.NewNode(gomavlib.NodeConf{
@@ -762,7 +815,7 @@ func telemetryAndClaimLoop(client *backend.BackendClient, config ConfigFile) {
 							telemBatt = float32(msg.BatteryRemaining)
 							telemVolt = float32(msg.VoltageBattery) / 1000.0 // mV to V
 							telemMutex.Unlock()
-							// log.Printf("[MAVLink LOG] SysStatus: Volt=%d (%.2fV) Batt=%d%%", msg.VoltageBattery, telemVolt, msg.BatteryRemaining)
+							log.Printf("[MAVLink LOG] SysStatus: Volt=%d (%.2fV) Batt=%d%%", msg.VoltageBattery, telemVolt, msg.BatteryRemaining)
 						}
 						// VFR HUD (Speed)
 						if msg, ok := frm.Message().(*ardupilotmega.MessageVfrHud); ok {
@@ -777,7 +830,7 @@ func telemetryAndClaimLoop(client *backend.BackendClient, config ConfigFile) {
 								Climb:       msg.Climb,
 							}
 							telemMutex.Unlock()
-							// log.Printf("[MAVLink LOG] VFR_HUD: Speed=%.2f Heading=%d Throttle=%d", msg.Groundspeed, msg.Heading, msg.Throttle)
+							log.Printf("[MAVLink LOG] VFR_HUD: Speed=%.2f Heading=%d Throttle=%d", msg.Groundspeed, msg.Heading, msg.Throttle)
 						}
 						// GPS RAW INT (Satellites)
 						if msg, ok := frm.Message().(*ardupilotmega.MessageGpsRawInt); ok {
@@ -837,33 +890,56 @@ func telemetryAndClaimLoop(client *backend.BackendClient, config ConfigFile) {
 	for {
 		select {
 		case <-ticker.C:
-			// Send Telemetry to LiveKit Data Channel
+			// Prepare Payload for LiveKit & Local Status
+			telemMutex.RLock()
+
+			// 1. Prepare LiveKit Payload
+			payload := LiveKitTelemetry{
+				Timestamp: time.Now().UnixMilli(),
+				GlobalPositionInt: &GlobalPosition{
+					Lat: telemLat,
+					Lon: telemLon,
+					Alt: telemAlt,
+					Hdg: telemHdg,
+				},
+				SysStatus: &SysStatus{
+					BatteryRemaining: int(telemBatt),
+					Voltage:          telemVolt,
+				},
+				VfrHud:              &telemVfrHud,
+				GpsRawInt:           &telemGpsRaw,
+				Mode:                telemMode,
+				Armed:               false, // Todo read heartbeat custom mode
+				NavControllerOutput: &telemNavOutput,
+				MissionCurrent:      &telemMissionCurrent,
+				HomePosition:        &telemHome,
+			}
+			telemMutex.RUnlock()
+
+			// Update Device Status for Local UI (3Hz)
+			deviceStatusMutex.Lock()
+			deviceStatus.Telemetry = &TelemetryStatus{
+				Battery: &SysStatus{
+					Voltage:          telemVolt,
+					BatteryRemaining: int(telemBatt),
+				},
+				GPS: &GpsRaw{
+					FixType:    telemGpsRaw.FixType,
+					Satellites: telemGpsRaw.Satellites,
+				},
+				HUD: &VfrHud{
+					Heading:     telemVfrHud.Heading,
+					Alt:         float32(telemAlt) / 1000.0,
+					Groundspeed: telemSpeed,
+				},
+				System: &TelemetryState{
+					Armed: false,
+					Mode:  telemMode,
+				},
+			}
+			deviceStatusMutex.Unlock()
+
 			if activeRoom != nil && activeRoom.LocalParticipant != nil {
-
-				// Prepare Payload
-				telemMutex.RLock()
-				payload := LiveKitTelemetry{
-					Timestamp: time.Now().UnixMilli(),
-					GlobalPositionInt: &GlobalPosition{
-						Lat: telemLat,
-						Lon: telemLon,
-						Alt: telemAlt,
-						Hdg: telemHdg,
-					},
-					SysStatus: &SysStatus{
-						BatteryRemaining: int(telemBatt),
-						Voltage:          telemVolt,
-					},
-					VfrHud:              &telemVfrHud,
-					GpsRawInt:           &telemGpsRaw,
-					Mode:                telemMode,
-					Armed:               false, // Todo read heartbeat custom mode
-					NavControllerOutput: &telemNavOutput,
-					MissionCurrent:      &telemMissionCurrent,
-					HomePosition:        &telemHome,
-				}
-				telemMutex.RUnlock()
-
 				data, _ := json.Marshal(LiveKitDataMessage{
 					Type: "telemetry",
 					Data: payload,
@@ -871,7 +947,6 @@ func telemetryAndClaimLoop(client *backend.BackendClient, config ConfigFile) {
 
 				if err := activeRoom.LocalParticipant.PublishData(data, lksdk.WithDataPublishReliable(true), lksdk.WithDataPublishTopic("telemetry")); err != nil {
 					// log.Printf("Failed to publish data: %v", err)
-					// Keep quiet on high freq errors
 				}
 			}
 
@@ -1072,30 +1147,6 @@ func connectToLiveKit(roomName string, client *backend.BackendClient) {
 		return
 	}
 
-	// --- ZeroTier Integration ---
-	// Attempt to pull ZeroTier config and join network
-	ztConfig, err := client.GetZeroTierConfig(client.Identity.DeviceID)
-	if err != nil {
-		log.Printf("[ZeroTier] Failed to get config: %v", err)
-	} else if ztConfig != nil && ztConfig.NetworkID != "" {
-		log.Printf("[ZeroTier] Found Network ID: %s. Ensuring membership...", ztConfig.NetworkID)
-
-		// Check current networks
-		out, _ := exec.Command("zerotier-cli", "listnetworks").Output()
-		if !strings.Contains(string(out), ztConfig.NetworkID) {
-			log.Printf("[ZeroTier] Joining network %s...", ztConfig.NetworkID)
-			if err := exec.Command("zerotier-cli", "join", ztConfig.NetworkID).Run(); err != nil {
-				log.Printf("[ZeroTier] ❌ Join Failed: %v", err)
-			} else {
-				log.Println("[ZeroTier] ✅ Join command executed.")
-			}
-		} else {
-			log.Println("[ZeroTier] Already joined network.")
-		}
-	} else {
-		log.Println("[ZeroTier] No Network ID configured in Backend.")
-	}
-
 	// Connect
 	cb := lksdk.NewRoomCallback()
 	cb.OnParticipantConnected = func(p *lksdk.RemoteParticipant) {
@@ -1237,4 +1288,180 @@ func startVideoRelayServer() {
 		conn.Close()
 		log.Println("[VideoRelay] Camera Disconnected. Waiting for reconnection...")
 	}
+}
+
+func handleCameras(w http.ResponseWriter, r *http.Request) {
+	// Mock response to satisfy UI - Frontend expects array of strings
+	cameras := []string{
+		"/dev/video0",
+		"/dev/video1",
+		"/dev/video2",
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(cameras)
+}
+
+// --- GCS API HANDLERS ---
+
+func handleGCSEndpoints(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "GET" {
+		list := gcsForwarder.ListEndpoints()
+		json.NewEncoder(w).Encode(list)
+		return
+	}
+
+	if r.Method == "POST" {
+		var ep gcs.Endpoint
+		if err := json.NewDecoder(r.Body).Decode(&ep); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		ep.ID = fmt.Sprintf("%d", time.Now().UnixNano()) // Simple ID
+		ep.Enabled = true                                // Enable by default
+		gcsForwarder.AddEndpoint(ep)
+		json.NewEncoder(w).Encode(ep)
+		return
+	}
+	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
+func handleGCSEndpointDelete(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "Missing id", http.StatusBadRequest)
+		return
+	}
+	gcsForwarder.RemoveEndpoint(id)
+	w.WriteHeader(http.StatusOK)
+}
+
+func handleGCSEndpointToggle(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	enabledStr := r.URL.Query().Get("enabled")
+	enabled := enabledStr == "true"
+	gcsForwarder.ToggleEndpoint(id, enabled)
+	w.WriteHeader(http.StatusOK)
+}
+
+// --- ZeroTier Helper ---
+func runZeroTier(args ...string) (string, error) {
+	ztPath := "/usr/sbin/zerotier-cli"
+
+	// Try executing directly
+	cmd := exec.Command(ztPath, args...)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return string(out), nil
+	}
+
+	// If failed, try with sudo (non-interactive)
+	// Only makes sense if we are not root but have passwordless sudo or similar.
+	// But commonly "Exit Code 2" means permission denied.
+	// Let's try sudo -n (non-interactive)
+	log.Printf("[ZeroTier] Direct execution failed (%v). Trying sudo...", err)
+
+	sudoArgs := append([]string{"-n", ztPath}, args...)
+	cmdSudo := exec.Command("sudo", sudoArgs...)
+	outSudo, errSudo := cmdSudo.CombinedOutput()
+
+	if errSudo != nil {
+		// Log specific sudo error
+		log.Printf("[ZeroTier] Sudo execution also failed: %v Output: %s", errSudo, string(outSudo))
+		return string(out), err // Return original error for consistency, or maybe errSudo
+	}
+
+	return string(outSudo), nil
+}
+
+// --- ZeroTier Logic (Ported) ---
+func ensureZeroTierConnection(c *backend.BackendClient) {
+	// 1. Get Config
+	if c.Identity == nil {
+		return
+	}
+	ztConfig, err := c.GetZeroTierConfig(c.Identity.DeviceID)
+	if err != nil {
+		log.Printf("[ZeroTier] Failed to get config: %v (Is Backend Up?)", err)
+		return
+	}
+
+	if ztConfig == nil || ztConfig.NetworkID == "" {
+		log.Println("[ZeroTier] No Network ID configured.")
+		return
+	}
+
+	// 2. Check Membership
+	out, err := runZeroTier("listnetworks")
+	if err == nil && !strings.Contains(out, ztConfig.NetworkID) {
+		log.Printf("[ZeroTier] Joining network %s...", ztConfig.NetworkID)
+		if _, err := runZeroTier("join", ztConfig.NetworkID); err != nil {
+			log.Printf("[ZeroTier] ❌ Join Failed: %v", err)
+			deviceStatus.ZeroTier.LastError = "Join Failed"
+		} else {
+			log.Println("[ZeroTier] ✅ Join command executed.")
+		}
+	} else if err != nil {
+		log.Printf("[ZeroTier] Failed to list networks: %v", err)
+	}
+
+	// 3. Get Node ID & Status
+	infoOut, _ := runZeroTier("info")
+	var nodeID string
+	fields := strings.Fields(infoOut)
+	if len(fields) >= 3 {
+		nodeID = fields[2]
+	}
+
+	// 4. Update Backend with Node ID
+	if nodeID != "" {
+		c.UpdateNodeID(c.Identity.DeviceID, nodeID)
+	}
+
+	// 5. Get Managed IP
+	ipOut, _ := runZeroTier("get", ztConfig.NetworkID, "ip")
+	managedIP := strings.TrimSpace(ipOut)
+
+	deviceStatusMutex.Lock()
+	deviceStatus.ZeroTier.NetworkID = ztConfig.NetworkID
+	if managedIP != "" {
+		deviceStatus.ZeroTier.State = "Connected"
+		deviceStatus.ZeroTier.IPAddress = managedIP
+		deviceStatus.ZeroTier.LastError = ""
+
+		// Report IP to Backend
+		if err := c.SaveZeroTierConfig(managedIP); err != nil {
+			log.Printf("[ZeroTier] Failed to report IP: %v", err)
+		}
+	} else {
+		deviceStatus.ZeroTier.State = "Connected (No IP)"
+	}
+	deviceStatusMutex.Unlock()
+}
+
+func syncGCSEndpoints(client *backend.BackendClient) {
+	if client == nil || gcsForwarder == nil {
+		return
+	}
+
+	cloudEndpoints, err := client.GetTelemetryEndpoints()
+	if err != nil {
+		log.Printf("[GCS] Failed to fetch endpoints from cloud: %v", err)
+		return
+	}
+
+	// Convert backend.TelemetryEndpoint to gcs.Endpoint
+	var gcsEndpoints []gcs.Endpoint
+	for _, ce := range cloudEndpoints {
+		gcsEndpoints = append(gcsEndpoints, gcs.Endpoint{
+			ID:        ce.ID,
+			Name:      ce.Name,
+			IP:        ce.Host,
+			Port:      ce.TelemetryPort,
+			Enabled:   ce.Enabled,
+			Video:     ce.EnableVideo,
+			Telemetry: ce.EnableTelemetry,
+		})
+	}
+
+	gcsForwarder.SyncEndpoints(gcsEndpoints)
 }
