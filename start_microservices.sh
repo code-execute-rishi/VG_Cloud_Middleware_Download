@@ -7,18 +7,15 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-mkdir -p bin
+# Production Startup Script
+BIN_DIR="/opt/vyom/bin"
 
-# Build everything
-echo "🏗️  Building..."
-make all
-
-if [ $? -ne 0 ]; then
-    echo "❌ Build Failed"
-    exit 1
+if [ ! -d "$BIN_DIR" ]; then
+    echo "⚠️  Bin directory not found at $BIN_DIR. Using local './bin' for dev."
+    BIN_DIR="./bin"
 fi
 
-echo "✅ Build Complete. Launching Services..."
+echo "✅ Launching Services from $BIN_DIR..."
 
 # cleanup old
 pkill -f vyom-api
@@ -28,19 +25,20 @@ pkill -f vyom-livekit
 pkill -f vyom-camera
 
 # Start services in background
-./bin/vyom-api &
+# Start services in background
+$BIN_DIR/vyom-api &
 PID_API=$!
 
-./bin/vyom-zerotier &
+$BIN_DIR/vyom-zerotier &
 PID_ZT=$!
 
-./bin/vyom-telemetry &
+$BIN_DIR/vyom-telemetry &
 PID_TLM=$!
 
-./bin/vyom-livekit &
+$BIN_DIR/vyom-livekit &
 PID_LK=$!
 
-./bin/vyom-camera &
+$BIN_DIR/vyom-camera &
 PID_CAM=$!
 
 echo "🌟 All Services Started!"
