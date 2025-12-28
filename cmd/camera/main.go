@@ -81,21 +81,33 @@ func runGStreamerPipeline() {
 		width := "640"
 		height := "480"
 
-		// Pipeline:
-		// Attempt to use physical camera first.
+		// Pipeline Logic:
+		// 1. Check if 'libcamerasrc' exists (Preferred for RPi)
+		// 2. Check /dev/video0 (Fallback)
+		// 3. TestSrc (Fallback)
+
 		src := ""
-		if _, err := os.Stat("/dev/video0"); err == nil {
-			log.Println("[Camera] Found /dev/video0. Using v4l2src.")
+		hasLibCamera := false
+		if _, err := exec.LookPath("gst-inspect-1.0"); err == nil {
+			cmd := exec.Command("gst-inspect-1.0", "libcamerasrc")
+			if err := cmd.Run(); err == nil {
+				hasLibCamera = true
+			}
+		}
+
+		if hasLibCamera {
+			log.Println("[Camera] 'libcamerasrc' found. Using libcamera pipeline.")
+			// libcamerasrc automatically handles ISP and format negotiation.
+			src = fmt.Sprintf("libcamerasrc ! video/x-raw,width=%s,height=%s,framerate=30/1", width, height)
+		} else if _, err := os.Stat("/dev/video0"); err == nil {
+			log.Println("[Camera] Found /dev/video0 (v4l2src).")
 			src = fmt.Sprintf("v4l2src device=/dev/video0 ! videoconvert ! video/x-raw,format=I420,width=%s,height=%s,framerate=30/1", width, height)
 		} else {
-			log.Println("[Camera] /dev/video0 NOT found. Using testsrc (Snow).")
+			log.Println("[Camera] No camera found. Using testsrc (Snow).")
 			src = fmt.Sprintf("videotestsrc is-live=true pattern=snow ! videoconvert ! video/x-raw,format=I420,width=%s,height=%s,framerate=30/1", width, height)
 		}
 
 		// Use queues to prevent blocking.
-		// Sync=false on fdsink important? Just relying on realtime source.
-		// Critical: Restart if TCP 5600 fails?
-		// We use `tcpclientsink` without `async` so it might block on connect, but vyom-livekit should accept it fast.
 		cmdStr := fmt.Sprintf(
 			"gst-launch-1.0 -q %s ! "+
 				"tee name=t ! queue max-size-buffers=4 leaky=downstream ! vp8enc error-resilient=1 deadline=1 keyframe-max-dist=30 cpu-used=5 ! queue ! avmux_ivf ! tcpclientsink host=127.0.0.1 port=5600 "+
