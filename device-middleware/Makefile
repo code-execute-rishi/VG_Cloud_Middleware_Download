@@ -70,6 +70,9 @@ package: all
 	echo "set -e" >> $(PKG_DIR)/DEBIAN/postinst
 	echo "chmod +x /opt/vyom/bin/*" >> $(PKG_DIR)/DEBIAN/postinst
 	echo "systemctl daemon-reload" >> $(PKG_DIR)/DEBIAN/postinst
+	echo "systemctl daemon-reload" >> $(PKG_DIR)/DEBIAN/postinst
+	echo "mkdir -p /var/log/vyom" >> $(PKG_DIR)/DEBIAN/postinst
+	echo "chmod 755 /var/log/vyom" >> $(PKG_DIR)/DEBIAN/postinst
 	echo "systemctl enable vyom-api vyom-zerotier vyom-telemetry vyom-livekit vyom-camera" >> $(PKG_DIR)/DEBIAN/postinst
 	echo "echo '✅ Vyom Middleware Installed.'" >> $(PKG_DIR)/DEBIAN/postinst
 	echo "echo 'Run \"systemctl start vyom-api\" to begin.'" >> $(PKG_DIR)/DEBIAN/postinst
