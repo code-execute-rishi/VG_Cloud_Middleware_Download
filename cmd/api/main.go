@@ -219,6 +219,8 @@ func startWebServer() {
 func runStateLoop() {
 	// Start Status Aggregator
 	go aggregateStatus()
+	go checkHardwareStatus()
+	go checkHardwareStatus()
 
 	for {
 		_, err := os.ReadFile(ConfigFileName)
@@ -651,4 +653,23 @@ func handleZeroTierConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(config)
+}
+
+func checkHardwareStatus() {
+	ticker := time.NewTicker(5 * time.Second)
+	for range ticker.C {
+		// Check Camera Status
+		// Try to connect to camera port 8081
+		camConnected := false
+		conn, err := net.DialTimeout("tcp", "127.0.0.1:8081", 1*time.Second)
+		if err == nil {
+			camConnected = true
+			conn.Close()
+		}
+
+		// Update Status
+		deviceStatusMutex.Lock()
+		deviceStatus.Hardware.CamConnected = camConnected
+		deviceStatusMutex.Unlock()
+	}
 }
