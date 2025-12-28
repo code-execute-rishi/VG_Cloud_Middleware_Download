@@ -160,6 +160,33 @@ func main() {
 
 	log.Println("✅ MAVLink Node Started. Listening for events...")
 
+	// Write Hardware Status (FC Connected)
+	// API expects: {"fc_connected": true, "cam_connected": ...}
+	// Note: We shouldn't overwrite checkHardwareStatus from API if possible.
+	// Actually, API reads "HardwareStatusFile" which is monolithic.
+	// If API writes cam_connected and attempts to read, we have a race/overwrite issue if we write ONLY fc_connected.
+	// Strategy: vyom-telemetry creates a separate status file? No, API expects one.
+	// Better Strategy: API manages the aggregate file.
+	// BUT API reads from file.
+	// Let's create a dedicated file for telemetry service connection status, e.g., "telemetry_meta.json"?
+	// Or just update the loop in API to look for specific file?
+	// For now, let's just make sure Telemetry Data is written.
+	// The Dashboard "Flight Controller" status checks "fc_connected".
+	// API sets "fc_connected" if it reads HardwareStatusFile.
+	// We should write to `hardware.json` as well.
+
+	go func() {
+		// Periodically assert FC connection in hardware.json
+		// CAUTION: This might race with API's camera check if they write to same file.
+		// Ideally API should merge, but it just reads/writes entire structs.
+		// Workaround: We will NOT write hardware.json here to avoid conflict.
+		// Instead, we update current API logic to infer FC Connected if Telemetry Data is recent.
+		// OR we rely on `vyom-telemetry` to be the source of truth for FC.
+
+		// For now, let's proceed with just updating `telemetry.json`.
+		// I will modify API to set IsConnected based on Telemetry != nil.
+	}()
+
 	// 4. UDP Client for LiveKit Relay
 	udpAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:5000")
 	udpConn, _ := net.DialUDP("udp", nil, udpAddr)
@@ -224,19 +251,64 @@ func main() {
 	}()
 
 	// 6. LiveKit Sender Loop (5Hz Rate Limit)
+	// 6. LiveKit Sender Loop (5Hz Rate Limit) & Local Status File Write (1Hz)
 	go func() {
-		ticker := time.NewTicker(200 * time.Millisecond)
-		for range ticker.C {
-			telemMutex.Lock()
-			// Send copy
-			t := lastTelem
-			t.Timestamp = time.Now().UnixMilli()
-			telemMutex.Unlock()
+		lkTicker := time.NewTicker(200 * time.Millisecond)
+		fileTicker := time.NewTicker(1 * time.Second)
+		statusDir := "/tmp/vyom-status"
+		statusFile := statusDir + "/telemetry.json"
+		os.MkdirAll(statusDir, 0777)
 
-			if udpConn != nil {
-				msg := LiveKitDataMessage{Type: "telemetry", Data: t}
-				b, _ := json.Marshal(msg)
-				udpConn.Write(b)
+		for {
+			select {
+			case <-lkTicker.C:
+				telemMutex.Lock()
+				t := lastTelem
+				t.Timestamp = time.Now().UnixMilli()
+				telemMutex.Unlock()
+
+				if udpConn != nil {
+					msg := LiveKitDataMessage{Type: "telemetry", Data: t}
+					b, _ := json.Marshal(msg)
+					udpConn.Write(b)
+				}
+			case <-fileTicker.C:
+				telemMutex.Lock()
+				t := lastTelem
+				telemMutex.Unlock()
+
+				// Map to API Struct (TelemetryStatus)
+				// API expects:
+				// type TelemetryStatus struct {
+				// 	Battery *SysStatus      `json:"battery"`
+				//  GPS     *GpsRaw         `json:"gps"`
+				// 	HUD     *VfrHud         `json:"hud"`
+				// 	System  *TelemetryState `json:"system"`
+				// }
+				type TelemetryState struct {
+					Armed bool   `json:"armed"`
+					Mode  string `json:"mode"`
+				}
+				type APIStatus struct {
+					Battery *SysStatus      `json:"battery"`
+					GPS     *GpsRaw         `json:"gps"`
+					HUD     *VfrHud         `json:"hud"`
+					System  *TelemetryState `json:"system"`
+				}
+
+				apiStatus := APIStatus{
+					Battery: t.SysStatus,
+					GPS:     t.GpsRawInt,
+					HUD:     t.VfrHud,
+					System: &TelemetryState{
+						Armed: t.Armed,
+						Mode:  t.Mode,
+					},
+				}
+
+				if data, err := json.Marshal(apiStatus); err == nil {
+					os.WriteFile(statusFile, data, 0666)
+				}
 			}
 		}
 	}()
