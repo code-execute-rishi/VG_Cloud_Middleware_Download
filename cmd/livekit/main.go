@@ -59,8 +59,7 @@ func startDataRelayServer() {
 	addr, _ := net.ResolveUDPAddr("udp", ":5000")
 	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
-		log.Printf("[DataRelay] ❌ Failed to bind UDP 5000: %v", err)
-		return
+		log.Fatalf("[DataRelay] ❌ Failed to bind UDP 5000: %v", err)
 	}
 	defer conn.Close()
 	log.Println("[DataRelay] 🟢 Listening on UDP :5000 for Telemetry...")
@@ -90,8 +89,7 @@ func startVideoRelayServer() {
 	addr := ":5600"
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Printf("[VideoRelay] ❌ Failed to bind port 5600: %v", err)
-		return
+		log.Fatalf("[VideoRelay] ❌ Failed to bind port 5600: %v", err)
 	}
 	defer ln.Close()
 	log.Printf("[VideoRelay] 🟢 Listening on %s for Camera Stream...", addr)
