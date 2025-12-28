@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"strings"
-	"time"
 )
 
 type UserClaims struct {
@@ -39,11 +38,4 @@ func ParseJWT(tokenString string) (*UserClaims, error) {
 	}
 
 	return &claims, nil
-}
-
-func FormatLoginDate(iat int64) string {
-	if iat == 0 {
-		return "Unknown"
-	}
-	return time.Unix(iat, 0).Format("Jan 02, 2006")
 }
