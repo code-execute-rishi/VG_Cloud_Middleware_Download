@@ -9,6 +9,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     
     steps:
     - uses: actions/checkout@v4
@@ -36,9 +38,25 @@ jobs:
         mv *.deb dist/
         echo "✅ Built ARM64"
 
-    - name: Upload Debian Packages
+    - name: Upload Debian Packages (Artifacts)
       uses: actions/upload-artifact@v4
       with:
         name: vyom-middleware-packages
         path: dist/*.deb
         retention-days: 5
+
+    - name: Update Nightly Release
+      uses: softprops/action-gh-release@v1
+      if: github.ref == 'refs/heads/main'
+      with:
+        tag_name: nightly
+        name: Nightly Build
+        body: |
+          ☁️ **Nightly Build**
+          Updated automatically on push.
+          
+          **Download Links:**
+          - [amd64.deb](https://github.com/${{ github.repository }}/releases/download/nightly/vyom-middleware_amd64.deb) (PC/Laptop/Cloud)
+          - [arm64.deb](https://github.com/${{ github.repository }}/releases/download/nightly/vyom-middleware_arm64.deb) (Raspberry Pi)
+        files: dist/*.deb
+        prerelease: true
