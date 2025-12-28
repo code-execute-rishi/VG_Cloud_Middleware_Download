@@ -1,0 +1,15 @@
+[Unit]
+Description=Vyom Telemetry Service (MAVLink)
+After=network.target vyom-api.service
+
+[Service]
+ExecStart=/opt/vyom/bin/vyom-telemetry
+Restart=always
+RestartSec=5
+User=root
+WorkingDirectory=/opt/vyom
+StandardOutput=append:/var/log/vyom/telemetry.log
+StandardError=append:/var/log/vyom/telemetry.log
+
+[Install]
+WantedBy=multi-user.target

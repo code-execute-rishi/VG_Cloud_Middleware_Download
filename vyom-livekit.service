@@ -1,0 +1,15 @@
+[Unit]
+Description=Vyom LiveKit Service (WebRTC)
+After=network.target vyom-api.service
+
+[Service]
+ExecStart=/opt/vyom/bin/vyom-livekit
+Restart=always
+RestartSec=5
+User=root
+WorkingDirectory=/opt/vyom
+StandardOutput=append:/var/log/vyom/livekit.log
+StandardError=append:/var/log/vyom/livekit.log
+
+[Install]
+WantedBy=multi-user.target

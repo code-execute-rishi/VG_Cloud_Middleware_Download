@@ -76,7 +76,10 @@ func NewBackendClient(baseURL string) *BackendClient {
 	return &BackendClient{
 		BaseURL: baseURL,
 		HTTPClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 60 * time.Second,
+			Transport: &http.Transport{
+				DisableKeepAlives: true, // Force new connection to avoid stale pools
+			},
 		},
 	}
 }

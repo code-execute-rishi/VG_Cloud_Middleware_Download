@@ -69,6 +69,36 @@ func main() {
 			resp.Body.Close()
 		}
 
+		// 3. Auto-Join Logic
+		// Only check if we are NOT connected to the desired network
+		go func() {
+			resp, err := client.Get(API_URL + "/api/config/zerotier")
+			if err == nil && resp.StatusCode == 200 {
+				var config struct {
+					NetworkID string `json:"network_id"`
+				}
+				if json.NewDecoder(resp.Body).Decode(&config) == nil {
+					resp.Body.Close()
+					if config.NetworkID != "" && config.NetworkID != status.NetworkID {
+						log.Printf("🔄 ZeroTier Config Change Detected! Joining %s...", config.NetworkID)
+
+						// If we are on another network, leave it first?
+						// ZeroTier supports multiple, but for this device use case, maybe 1 is better?
+						// For now, just JOIN.
+
+						out, err := runZeroTier("join", config.NetworkID)
+						log.Printf("Join Result: %s (Err: %v)", out, err)
+					}
+				} else {
+					resp.Body.Close()
+				}
+			} else if err != nil {
+				log.Printf("Failed to fetch ZT config: %v", err)
+			} else {
+				resp.Body.Close()
+			}
+		}()
+
 		time.Sleep(10 * time.Second)
 	}
 }

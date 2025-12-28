@@ -1,0 +1,15 @@
+[Unit]
+Description=Vyom Camera Service (GStreamer/MJPEG)
+After=network.target
+
+[Service]
+ExecStart=/opt/vyom/bin/vyom-camera
+Restart=always
+RestartSec=3
+User=root
+WorkingDirectory=/opt/vyom
+StandardOutput=append:/var/log/vyom/camera.log
+StandardError=append:/var/log/vyom/camera.log
+
+[Install]
+WantedBy=multi-user.target

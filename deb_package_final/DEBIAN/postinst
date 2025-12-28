@@ -1,6 +1,0 @@
-#!/bin/bash
-chmod +x /usr/local/bin/vyom-middleware
-chmod 755 /opt/vyom/ui
-systemctl daemon-reload
-systemctl enable vyom-middleware
-systemctl restart vyom-middleware
