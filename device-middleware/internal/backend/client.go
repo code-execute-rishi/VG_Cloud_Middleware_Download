@@ -14,7 +14,7 @@ import (
 
 const (
 	IdentityFile   = "identity.json"
-	DefaultBaseURL = "http://4.247.135.200"
+	DefaultBaseURL = "https://backend.internetlinkpro.vyomgarud.com"
 )
 
 // --- Data Models ---
@@ -145,51 +145,6 @@ func (c *BackendClient) GetLiveKitToken(deviceID string) (*LKTokenResponse, erro
 	return &res, nil
 }
 
-func (c *BackendClient) CheckClaim() (bool, bool) {
-	// Returns (IsClaimed, IsServerClaimed)
-	if c.Identity == nil || c.Identity.Token == "" {
-		return false, false
-	}
-
-	// Remote check
-	req := CheckClaimRequest{DeviceID: c.Identity.DeviceID}
-	var res CheckClaimResponse
-	if err := c.post("/api/v1/devices/auth/check-claim", req, &res); err != nil {
-		return true, false // Assume claimed locally if error? Or fail?
-	}
-	return true, res.Claim
-}
-
-func (c *BackendClient) UpdateTelemetry(lat, lon, alt, speed, head float64, sig, batt int) error {
-	if c.Identity == nil {
-		return nil
-	}
-
-	data := TelemetryUpdate{
-		Latitude: lat, Longitude: lon, Altitude: float32(alt),
-		Speed: float32(speed), Heading: float32(head),
-		SignalStrength: sig, Battery: batt,
-		FlightMode: "Unknown",
-	}
-
-	url := fmt.Sprintf("/api/v1/devices/%s/telemetry", c.Identity.DeviceID)
-	return c.post(url, data, nil)
-}
-
-func (c *BackendClient) CheckLiveness() error {
-	// Check if device is still claimed on the server
-	req := CheckClaimRequest{DeviceID: c.Identity.DeviceID}
-	var res CheckClaimResponse
-	err := c.post("/api/v1/devices/auth/check-claim", req, &res)
-
-	if err != nil {
-		if strings.Contains(err.Error(), "DEVICE_FORGOTTEN") {
-			return fmt.Errorf("DEVICE_FORGOTTEN")
-		}
-	}
-	return nil
-}
-
 func (c *BackendClient) GetZeroTierConfig(deviceID string) (*ZerotierConfigResponse, error) {
 	url := fmt.Sprintf("/api/v1/devices/%s/zerotier", deviceID)
 	var res ZerotierConfigResponse
@@ -197,34 +152,6 @@ func (c *BackendClient) GetZeroTierConfig(deviceID string) (*ZerotierConfigRespo
 		return nil, err
 	}
 	return &res, nil
-}
-
-func (c *BackendClient) UpdateNodeID(deviceID, nodeID string) error {
-	url := fmt.Sprintf("/api/v1/devices/%s/node-id", deviceID)
-	payload := map[string]string{"node_id": nodeID}
-
-	// Create Custom Request for PATCH
-	jsonPayload, _ := json.Marshal(payload)
-	req, err := http.NewRequest("PATCH", c.BaseURL+url, bytes.NewBuffer(jsonPayload))
-	if err != nil {
-		return err
-	}
-	// Add Auth
-	if c.Identity != nil {
-		req.Header.Set("Authorization", "Bearer "+c.Identity.Token)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("API Error %d", resp.StatusCode)
-	}
-	return nil
 }
 
 func (c *BackendClient) SaveZeroTierConfig(ip string) error {
