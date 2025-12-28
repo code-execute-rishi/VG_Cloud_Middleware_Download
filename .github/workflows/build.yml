@@ -1,0 +1,44 @@
+name: Build Debian Packages
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+        
+    - name: Create Dist Directory
+      run: mkdir -p dist
+
+    - name: Build AMD64 Package
+      run: |
+        make package ARCH=amd64
+        mv *.deb dist/
+        echo "✅ Built AMD64"
+
+    - name: Clean Build Artifacts
+      run: make clean
+
+    - name: Build ARM64 Package
+      run: |
+        make package ARCH=arm64
+        mv *.deb dist/
+        echo "✅ Built ARM64"
+
+    - name: Upload Debian Packages
+      uses: actions/upload-artifact@v3
+      with:
+        name: vyom-middleware-packages
+        path: dist/*.deb
+        retention-days: 5
