@@ -160,6 +160,53 @@ func main() {
 
 	log.Println("✅ MAVLink Node Started. Listening for events...")
 
+	// Start Heartbeat & Stream Request Loop
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		streamRequested := false
+		for range ticker.C {
+			// 1. Send Heartbeat to GCS/FC
+			node.WriteMessageAll(&ardupilotmega.MessageHeartbeat{
+				Type:           ardupilotmega.MAV_TYPE_GCS,
+				Autopilot:      ardupilotmega.MAV_AUTOPILOT_INVALID,
+				BaseMode:       0,
+				CustomMode:     0,
+				SystemStatus:   ardupilotmega.MAV_STATE_ACTIVE,
+				MavlinkVersion: 3,
+			})
+
+			// 2. Request Data Stream (only once or retry)
+			if !streamRequested {
+				log.Println("📡 Requesting Data Stream from FC...")
+				// ID 0, Comp 0 targets all
+				node.WriteMessageAll(&ardupilotmega.MessageRequestDataStream{
+					TargetSystem:    0,
+					TargetComponent: 0,
+					ReqStreamId:     uint8(ardupilotmega.MAV_DATA_STREAM_ALL),
+					ReqMessageRate:  4, // 4Hz
+					StartStop:       1,
+				})
+				// Re-send every 5s until we get data? For now, just spam it a few times or rely on 1Hz loop if needed.
+				// Better: Just reset flag if we detect no data.
+				// Simple approach: Send it every 10s to ensure connection.
+			}
+		}
+	}()
+
+	// Re-request loop
+	go func() {
+		for {
+			time.Sleep(10 * time.Second)
+			node.WriteMessageAll(&ardupilotmega.MessageRequestDataStream{
+				TargetSystem:    0,
+				TargetComponent: 0,
+				ReqStreamId:     uint8(ardupilotmega.MAV_DATA_STREAM_ALL),
+				ReqMessageRate:  4, // 4 Hz
+				StartStop:       1,
+			})
+		}
+	}()
+
 	// Write Hardware Status (FC Connected)
 	// API expects: {"fc_connected": true, "cam_connected": ...}
 	// Note: We shouldn't overwrite checkHardwareStatus from API if possible.
