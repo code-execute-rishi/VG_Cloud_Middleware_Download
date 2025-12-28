@@ -1,7 +1,7 @@
 .PHONY: all api zerotier telemetry livekit camera ui clean package
 
 VERSION := 1.0.0
-ARCH := arm64
+ARCH ?= amd64
 PKG_NAME := vyom-middleware
 PKG_DIR := deb_package
 DEB_NAME := $(PKG_NAME)_$(VERSION)_$(ARCH).deb
@@ -9,19 +9,19 @@ DEB_NAME := $(PKG_NAME)_$(VERSION)_$(ARCH).deb
 all: api zerotier telemetry livekit camera
 
 api:
-	go build -o bin/vyom-api cmd/api/main.go
+	GOOS=linux GOARCH=$(ARCH) go build -o bin/vyom-api cmd/api/main.go
 
 zerotier:
-	go build -o bin/vyom-zerotier cmd/zerotier/main.go
+	GOOS=linux GOARCH=$(ARCH) go build -o bin/vyom-zerotier cmd/zerotier/main.go
 
 telemetry:
-	go build -o bin/vyom-telemetry cmd/telemetry/main.go
+	GOOS=linux GOARCH=$(ARCH) go build -o bin/vyom-telemetry cmd/telemetry/main.go
 
 livekit:
-	go build -o bin/vyom-livekit cmd/livekit/main.go
+	GOOS=linux GOARCH=$(ARCH) go build -o bin/vyom-livekit cmd/livekit/main.go
 
 camera:
-	go build -o bin/vyom-camera cmd/camera/main.go
+	GOOS=linux GOARCH=$(ARCH) go build -o bin/vyom-camera cmd/camera/main.go
 
 ui:
 	cd ui && npm install && npm run build
@@ -39,9 +39,7 @@ package: all
 	# Copy Binaries
 	cp bin/* $(PKG_DIR)/opt/vyom/bin/
 	
-	# Copy Startup Script
-	cp start_microservices.sh $(PKG_DIR)/opt/vyom/bin/
-	chmod +x $(PKG_DIR)/opt/vyom/bin/start_microservices.sh
+	# No script needed anymore
 	
 	# Copy UI (Check if dist exists, if not warn)
 	if [ -d "ui/dist" ]; then \
@@ -50,8 +48,12 @@ package: all
 		echo "⚠️  UI dist not found. Run 'make ui' first if needed."; \
 	fi
 	
-	# Copy Systemd Service
-	cp vyom-middleware.service $(PKG_DIR)/etc/systemd/system/
+	# Copy Systemd Services
+	cp vyom-api.service $(PKG_DIR)/etc/systemd/system/
+	cp vyom-zerotier.service $(PKG_DIR)/etc/systemd/system/
+	cp vyom-telemetry.service $(PKG_DIR)/etc/systemd/system/
+	cp vyom-livekit.service $(PKG_DIR)/etc/systemd/system/
+	cp vyom-camera.service $(PKG_DIR)/etc/systemd/system/
 	
 	# Create Control File
 	echo "Package: $(PKG_NAME)" > $(PKG_DIR)/DEBIAN/control
@@ -68,8 +70,9 @@ package: all
 	echo "set -e" >> $(PKG_DIR)/DEBIAN/postinst
 	echo "chmod +x /opt/vyom/bin/*" >> $(PKG_DIR)/DEBIAN/postinst
 	echo "systemctl daemon-reload" >> $(PKG_DIR)/DEBIAN/postinst
-	echo "systemctl enable vyom-middleware" >> $(PKG_DIR)/DEBIAN/postinst
-	echo "echo '✅ Vyom Middleware Installed. Run \"systemctl start vyom-middleware\" to begin.'" >> $(PKG_DIR)/DEBIAN/postinst
+	echo "systemctl enable vyom-api vyom-zerotier vyom-telemetry vyom-livekit vyom-camera" >> $(PKG_DIR)/DEBIAN/postinst
+	echo "echo '✅ Vyom Middleware Installed.'" >> $(PKG_DIR)/DEBIAN/postinst
+	echo "echo 'Run \"systemctl start vyom-api\" to begin.'" >> $(PKG_DIR)/DEBIAN/postinst
 	chmod 0755 $(PKG_DIR)/DEBIAN/postinst
 	
 	# Build Deb

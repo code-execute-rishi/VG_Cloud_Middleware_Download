@@ -200,6 +200,7 @@ func startWebServer() {
 	mux.HandleFunc("/api/logs", handleLogs)
 	mux.HandleFunc("/api/stream", handleLocalStream)
 	mux.HandleFunc("/api/cameras", handleCameras)
+	mux.HandleFunc("/api/config/zerotier", handleZeroTierConfig)
 
 	uiDir := "./ui/dist"
 	if _, err := os.Stat(uiDir); os.IsNotExist(err) {
@@ -629,4 +630,25 @@ func handleInternalTelemetry(w http.ResponseWriter, r *http.Request) {
 	// This implies the list is empty?
 
 	w.WriteHeader(http.StatusOK)
+}
+
+func handleZeroTierConfig(w http.ResponseWriter, r *http.Request) {
+	if apiClient == nil || apiClient.Identity == nil {
+		http.Error(w, "Identity not loaded", http.StatusServiceUnavailable)
+		return
+	}
+	config, err := apiClient.GetZeroTierConfig(apiClient.Identity.DeviceID)
+	if err != nil {
+		if strings.Contains(err.Error(), "DEVICE_FORGOTTEN") {
+			log.Println("🚨 Device Forgotten by Cloud! Factory Resetting...")
+			apiClient.ResetIdentity()
+			os.Remove(ConfigFileName)
+			os.Exit(0) // Restart to Claim Mode
+		}
+		log.Printf("ERROR fetching ZeroTier Config: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to fetch ZT config: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(config)
 }
