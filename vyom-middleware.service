@@ -1,0 +1,12 @@
+[Unit]
+Description=Vyom Device Middleware
+After=network.target
+
+[Service]
+ExecStart=/opt/vyom/bin/start_microservices.sh
+Restart=always
+User=root
+WorkingDirectory=/opt/vyom
+
+[Install]
+WantedBy=multi-user.target

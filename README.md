@@ -1,3 +1,4 @@
+
 # VyomGarud GCS 🚁
 
 ![Go](https://img.shields.io/badge/Go-00ADD8?style=for-the-badge&logo=go&logoColor=white)
@@ -86,4 +87,5 @@ If you need to move the device to a new account or fix a bad configuration:
 5.  It will stop the camera, wipe `identity.json` and `config.json`, and **Reboot** back to the QR Code screen.
 
 ---
+*Developed for Senior Internship Project*
 *Developed for Senior Internship Project*

@@ -1,0 +1,62 @@
+name: Build Debian Packages
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+        
+    - name: Create Dist Directory
+      run: mkdir -p dist
+
+    - name: Build AMD64 Package
+      run: |
+        make package ARCH=amd64
+        mv *.deb dist/vyom-middleware_latest_amd64.deb
+        echo "✅ Built AMD64"
+
+    - name: Clean Build Artifacts
+      run: make clean
+
+    - name: Build ARM64 Package
+      run: |
+        make package ARCH=arm64
+        mv *.deb dist/vyom-middleware_latest_arm64.deb
+        echo "✅ Built ARM64"
+
+    - name: Upload Debian Packages (Artifacts)
+      uses: actions/upload-artifact@v4
+      with:
+        name: vyom-middleware-packages
+        path: dist/*.deb
+        retention-days: 5
+
+    - name: Update Nightly Release
+      uses: softprops/action-gh-release@v1
+      if: github.ref == 'refs/heads/main'
+      with:
+        tag_name: nightly
+        name: Nightly Build
+        body: |
+          ☁️ **Nightly Build**
+          Updated automatically on push.
+          
+          **Download Links:**
+          - [amd64.deb](https://github.com/${{ github.repository }}/releases/download/nightly/vyom-middleware_latest_amd64.deb) (PC/Laptop/Cloud)
+          - [arm64.deb](https://github.com/${{ github.repository }}/releases/download/nightly/vyom-middleware_latest_arm64.deb) (Raspberry Pi)
+        files: dist/*.deb
+        prerelease: true

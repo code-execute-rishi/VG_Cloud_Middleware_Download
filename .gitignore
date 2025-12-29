@@ -10,20 +10,31 @@ middleware-check
 vyom-middleware
 device-middleware/device.log
 device-middleware/middleware-bin
+*.exe
+*.dll
+*.so
+*.dylib
 
 # Build Directories
 device-middleware/deb_package/
 device-middleware/deb_package_local/
+deb_package/
+deb_package_local/
 
 # Node / Frontend
 node_modules/
 device-middleware/ui/node_modules/
 device-middleware/ui/dist/
+ui/node_modules/
+ui/dist/
+vendor/
 
 # Artifacts
 *.deb
 *.ivf
 test_pipe
+*.tar.gz
+*.zip
 
 # Clutter / Local Only
 # *.sh # Scripts are now kept in legacy_scripts/ or useful
@@ -44,3 +55,9 @@ backend_logs.txt
 *.db
 vyom-api
 device-middleware/bin/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
