@@ -57,6 +57,7 @@ package: all
 	echo "Section: base" >> $(PKG_DIR)/DEBIAN/control
 	echo "Priority: optional" >> $(PKG_DIR)/DEBIAN/control
 	echo "Architecture: $(ARCH)" >> $(PKG_DIR)/DEBIAN/control
+	echo "Depends: zerotier-one, libgstreamer1.0-0, gstreamer1.0-tools, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-libav, gstreamer1.0-libcamera, psmisc, procps" >> $(PKG_DIR)/DEBIAN/control
 	echo "Maintainer: Vyom <support@vyom.com>" >> $(PKG_DIR)/DEBIAN/control
 	echo "Description: Vyom Device Middleware (Microservices)" >> $(PKG_DIR)/DEBIAN/control
 	echo "  Handles Telemetry, Video, and ZeroTier for Vyom Drones." >> $(PKG_DIR)/DEBIAN/control
@@ -74,5 +75,5 @@ package: all
 	chmod 0755 $(PKG_DIR)/DEBIAN/postinst
 	
 	# Build Deb
-	dpkg-deb --build $(PKG_DIR) $(DEB_NAME)
+	dpkg-deb -Zxz --build $(PKG_DIR) $(DEB_NAME)
 	@echo "🎉 Package Created: $(DEB_NAME)"
