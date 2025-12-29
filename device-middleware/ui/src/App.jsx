@@ -5,6 +5,9 @@ import MJPEGStream from './components/MJPEGStream';
 import SystemHealth from './components/SystemHealth';
 import FlightController from './components/FlightController';
 import Sidebar from './components/Sidebar';
+import DeviceMonitoring from './components/DeviceMonitoring';
+import LogsViewer from './components/LogsViewer';
+import ZeroTierVPN from './components/ZeroTierVPN';
 
 function App() {
   return (
@@ -225,8 +228,9 @@ function AppContent() {
         <Routes>
           <Route path="/" element={<DashboardView status={status} isConnected={status?.is_connected} />} />
           <Route path="/camera" element={<CameraSettingsView status={status} formData={formData} setFormData={setFormData} cameras={cameras} serialPorts={serialPorts} handleUpdateConfig={handleUpdateConfig} loading={loading} />} />
-          <Route path="/logs" element={<LogsView />} />
+          <Route path="/monitoring" element={<DeviceMonitoring status={status} />} />
           <Route path="/flight-controller" element={<FlightController />} />
+          <Route path="/zerotier" element={<ZeroTierVPN />} />
         </Routes>
       </main>
     </div>
@@ -238,11 +242,12 @@ function AppContent() {
 const DashboardView = ({ status, isConnected }) => {
   const lk = status?.livekit_status || {};
   const zt = status?.zerotier_status || {};
+  const sysStats = useSystemStats();
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
 
-      {/* KPI Stats Row */}
+      {/* 1. KPI Stats Row */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '20px' }}>
         <div className="card" style={{ padding: '1.2rem', display: 'flex', alignItems: 'center', gap: '15px' }}>
           <div style={{ width: '48px', height: '48px', borderRadius: '12px', background: '#dcfce7', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#16a34a' }}>
@@ -275,50 +280,52 @@ const DashboardView = ({ status, isConnected }) => {
         </div>
       </div>
 
-      {/* Network & System Grid */}
+      {/* 2. RESTORED: Network Health & System Status (Old Style) */}
+      <h2 style={{ fontSize: '1rem', color: '#64748b', textTransform: 'uppercase', margin: '0 0 -10px 5px', letterSpacing: '0.05em' }}>Overview</h2>
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)', gap: '20px' }}>
 
-        {/* Left Col: Network Details */}
+        {/* Network Health (LiveKit + ZeroTier) */}
         <div className="card">
           <h2>Network Health</h2>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+
             {/* LiveKit */}
-            <div style={{ background: '#f8fafc', padding: '1.5rem', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-                <h3 style={{ margin: 0, fontSize: '1rem' }}>LiveKit Video</h3>
+            <div style={{ background: '#f8fafc', padding: '1rem', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                <h3 style={{ margin: 0, fontSize: '0.95rem', color: '#334155' }}>LiveKit Video</h3>
                 <span className={`tag ${lk.state === 'Connected' ? 'connected' : 'disconnected'}`}>{lk.state || 'Disconnected'}</span>
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                <div className="info-row" style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span className="info-label" style={{ color: '#64748b' }}>Room Name</span>
-                  <span className="code">{lk.room_name || "-"}</span>
-                </div>
-                <div className="info-row" style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span className="info-label" style={{ color: '#64748b' }}>Participants</span>
-                  <span style={{ fontWeight: '700' }}>{lk.participants || 0}</span>
-                </div>
-                {lk.last_error && <div style={{ color: '#ef4444', fontSize: '0.85rem', marginTop: '5px' }}>{lk.last_error}</div>}
+              <div className="info-row" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span className="info-label">Room Name</span>
+                <span className="code">{lk.room_name || "-"}</span>
               </div>
+              <div className="info-row" style={{ display: 'flex', justifyContent: 'space-between', marginTop: '5px' }}>
+                <span className="info-label">Participants</span>
+                <span style={{ fontWeight: '700' }}>{lk.participants || 0}</span>
+              </div>
+              {lk.last_error && <div style={{ color: '#ef4444', fontSize: '0.85rem', marginTop: '5px' }}>{lk.last_error}</div>}
             </div>
 
             {/* ZeroTier */}
-            <div style={{ background: '#f8fafc', padding: '1.5rem', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-                <h3 style={{ margin: 0, fontSize: '1rem' }}>ZeroTier VPN</h3>
+            <div style={{ background: '#f8fafc', padding: '1rem', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                <h3 style={{ margin: 0, fontSize: '0.95rem', color: '#334155' }}>ZeroTier VPN</h3>
                 <span className={`tag ${zt.state === 'Connected' ? 'connected' : 'disconnected'}`}>{zt.state || 'Disconnected'}</span>
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                <div className="info-row" style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span className="info-label" style={{ color: '#64748b' }}>Managed IP</span>
-                  <span className="code">{zt.ip_address || "-"}</span>
-                </div>
-                {zt.last_error && <div style={{ color: '#ef4444', fontSize: '0.85rem', marginTop: '5px' }}>{zt.last_error}</div>}
+              <div className="info-row" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span className="info-label">IP Address</span>
+                <span className="code">{zt.ip_address || "-"}</span>
+              </div>
+              <div className="info-row" style={{ display: 'flex', justifyContent: 'space-between', marginTop: '5px' }}>
+                <span className="info-label">Net ID</span>
+                <span className="code">{zt.network_id || "-"}</span>
               </div>
             </div>
+
           </div>
         </div>
 
-        {/* Right Col: System Health */}
+        {/* System Status (Old Style - Simplified) */}
         <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
           <h2>System Status</h2>
           <div style={{ flex: 1 }}>
@@ -328,10 +335,64 @@ const DashboardView = ({ status, isConnected }) => {
             />
           </div>
         </div>
+      </div>
+
+      {/* 3. NEW: Connection Status (APN) & Hardware Status (Detailed) */}
+      <h2 style={{ fontSize: '1rem', color: '#64748b', textTransform: 'uppercase', margin: '10px 0 -10px 5px', letterSpacing: '0.05em' }}>Telemetry & Connection</h2>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '20px' }}>
+
+        {/* Connection Status: JUST APN/Interface (Removed ZT/LK to avoid duplication) */}
+        <div className="card">
+          <h2>Connection Status</h2>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+            <h3 style={{ margin: 0, fontSize: '0.95rem', color: '#475569' }}>Network Interface</h3>
+            <span className="tag connected" style={{ background: '#f1f5f9', color: '#475569' }}>{sysStats?.interfaces?.some(i => i.startsWith('wla') || i.startsWith('wl')) ? 'WiFi' : 'Ethernet'}</span>
+          </div>
+          <div className="info-row" style={{ display: 'flex', justifyContent: 'space-between', padding: '15px', background: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+              <span className="info-label" style={{ fontSize: '1rem', color: '#334155' }}>APN/Modem</span>
+              <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Detected: {sysStats?.interfaces?.join(', ') || '-'}</div>
+            </div>
+            <span style={{ fontWeight: '700', fontSize: '1.1rem', color: sysStats?.interfaces?.some(i => i.startsWith('wwan') || i.startsWith('ppp') || i.startsWith('usb')) ? '#22c55e' : '#94a3b8' }}>
+              {sysStats?.interfaces?.some(i => i.startsWith('wwan') || i.startsWith('ppp') || i.startsWith('usb')) ? 'Active' : 'Not Detected'}
+            </span>
+          </div>
+        </div>
+
+        {/* Hardware Status: Detailed FC Stats */}
+        <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
+          <h2>Hardware Status</h2>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '15px' }}>
+            <div style={{ background: '#f8fafc', padding: '1.2rem', borderRadius: '8px', border: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', justifyContent: 'center', minHeight: '100px' }}>
+              <div className="info-row" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <span className="info-label" style={{ fontSize: '1rem' }}>FC Mode</span>
+                <span style={{ fontWeight: '700', fontSize: '1.1rem' }}>{status?.telemetry?.system?.mode || "UNKNOWN"}</span>
+              </div>
+              <div className="info-row" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span className="info-label" style={{ fontSize: '1rem' }}>Arming</span>
+                <span style={{ fontWeight: '700', fontSize: '1.1rem', color: status?.telemetry?.system?.armed ? '#ef4444' : '#22c55e' }}>
+                  {status?.telemetry?.system?.armed ? "ARMED" : "DISARMED"}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
 
       </div>
     </div>
   );
+};
+
+// Helper Hook (can be extracted later, but putting here for context scope in this generic replace)
+const useSystemStats = () => {
+  const [stats, setStats] = React.useState(null);
+  React.useEffect(() => {
+    const fetchStats = () => fetch("/api/system-stats").then(r => r.json()).then(setStats).catch(() => { });
+    fetchStats();
+    const interval = setInterval(fetchStats, 2000);
+    return () => clearInterval(interval);
+  }, []);
+  return stats;
 };
 
 const CameraSettingsView = ({ status, formData, setFormData, cameras, serialPorts, handleUpdateConfig, loading }) => (
@@ -405,61 +466,13 @@ const CameraSettingsView = ({ status, formData, setFormData, cameras, serialPort
         </div>
       </div>
     </div>
+
+    {/* 3. Camera Logs */}
+    <LogsViewer service="camera" />
   </div>
 );
 
-const LogsView = () => (
-  <div className="card" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-      <h2 style={{ margin: 0, border: 'none', padding: 0 }}>System Logs</h2>
-      <a href="/api/logs?download=true" className="btn-small" target="_blank" rel="noopener noreferrer">
-        Download Logs
-      </a>
-    </div>
-    <LogsViewer />
-  </div>
-);
-
-const StatusItem = ({ label, value, active, warned }) => (
-  <div className="status-item">
-    <div className="status-label">{label}</div>
-    <div className={`status-value ${active ? 'active' : ''} ${warned ? 'warn' : ''}`}>
-      {value}
-    </div>
-  </div>
-);
-
-const LogsViewer = () => {
-  const [logs, setLogs] = useState("Loading logs...");
-
-  useEffect(() => {
-    fetch("/api/logs")
-      .then(res => {
-        if (!res.ok) throw new Error("Failed to load");
-        return res.text();
-      })
-      .then(text => setLogs(text))
-      .catch(err => setLogs("Error loading logs: " + err.message));
-  }, []);
-
-  return (
-    <div style={{
-      background: '#0f172a',
-      color: '#22c55e',
-      padding: '15px',
-      borderRadius: '8px',
-      fontFamily: 'source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace',
-      fontSize: '13px',
-      lineHeight: '1.5',
-      flex: 1,
-      overflow: 'auto',
-      whiteSpace: 'pre-wrap',
-      border: '1px solid #334155'
-    }}>
-      {logs}
-    </div>
-  );
-};
+// LogsViewer extracted to components/LogsViewer.jsx
 
 const NetworkStatusCard = ({ status }) => {
   const lk = status?.livekit_status || {};

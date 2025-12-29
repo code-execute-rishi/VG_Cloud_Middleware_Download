@@ -125,10 +125,18 @@ type LiveKitStatus struct {
 }
 
 type ZeroTierStatus struct {
-	State     string `json:"state"`
-	NetworkID string `json:"network_id"`
-	IPAddress string `json:"ip_address"`
-	LastError string `json:"last_error"`
+	State     string         `json:"state"`
+	NetworkID string         `json:"network_id"`
+	IPAddress string         `json:"ip_address"`
+	LastError string         `json:"last_error"`
+	Peers     []ZeroTierPeer `json:"peers"`
+}
+
+type ZeroTierPeer struct {
+	Address string `json:"address"`
+	Version string `json:"version"`
+	Latency int    `json:"latency"`
+	Role    string `json:"role"`
 }
 
 func CleanupPort(port int) {
@@ -182,6 +190,7 @@ func startWebServer() {
 	log.Printf("\n>>> WEB UI AVAILABLE: http://%s%s <<<\n", ip, SetupPort)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/system-info", handleSystemInfo)
+	mux.HandleFunc("/api/system-stats", handleSystemStats)
 	mux.HandleFunc("/api/status", handleStatus)
 	mux.HandleFunc("/api/update-config", handleUpdateConfig)
 
@@ -201,6 +210,7 @@ func startWebServer() {
 	mux.HandleFunc("/api/stream", handleLocalStream)
 	mux.HandleFunc("/api/cameras", handleCameras)
 	mux.HandleFunc("/api/config/zerotier", handleZeroTierConfig)
+	mux.HandleFunc("/api/restart", handleRestart)
 
 	uiDir := "./ui/dist"
 	if _, err := os.Stat(uiDir); os.IsNotExist(err) {
@@ -214,6 +224,40 @@ func startWebServer() {
 	if err := http.ListenAndServe(SetupPort, corsMiddleware(mux)); err != nil {
 		log.Fatalf("Web Server failed: %v", err)
 	}
+}
+
+func handleRestart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	log.Println("⚠️ RESTART REQUESTED: Deleting config and restarting middleware...")
+
+	// 1. Delete Config Files
+	os.Remove(ConfigFileName)
+	os.Remove(backend.IdentityFile)
+
+	// 2. Clear Status Files (Prevent stale state)
+	os.RemoveAll(StatusDir)
+
+	// 3. Restart Service
+	// Attempt systemctl restart first
+	go func() {
+		// Wait a second to let the response go through
+		time.Sleep(1 * time.Second)
+
+		cmd := exec.Command("systemctl", "restart", "vyom-middleware")
+		if err := cmd.Run(); err != nil {
+			log.Printf("❌ systemctl restart failed: %v. Attempting manual exit.", err)
+			// Fallback: This will kill the API. If running in auto-restart loop (script), it comes back.
+			// But other services won't restart. Ideally systemctl is expected in Prod.
+			os.Exit(0)
+		}
+	}()
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Middleware Restarting..."))
 }
 
 func runStateLoop() {
@@ -331,6 +375,9 @@ func aggregateStatus() {
 			if json.Unmarshal(data, &telem) == nil {
 				deviceStatusMutex.Lock()
 				deviceStatus.Telemetry = &telem
+				if telem.System != nil {
+					deviceStatus.Hardware.FCConnected = true
+				}
 				deviceStatusMutex.Unlock()
 			}
 		}
@@ -422,6 +469,179 @@ func handleSystemInfo(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+func handleSystemStats(w http.ResponseWriter, r *http.Request) {
+	type SystemStats struct {
+		CPUUsage   float64  `json:"cpu_usage"`
+		CPUTemp    float64  `json:"cpu_temp"` // NEW
+		RAMUsed    uint64   `json:"ram_used"`
+		RAMTotal   uint64   `json:"ram_total"`
+		DiskUsed   uint64   `json:"disk_used"`
+		DiskTotal  uint64   `json:"disk_total"`
+		Interfaces []string `json:"interfaces"`
+		NetRxSpeed float64  `json:"net_rx_speed"` // KB/s
+		NetTxSpeed float64  `json:"net_tx_speed"` // KB/s
+	}
+
+	var stats SystemStats
+
+	// 1. Get Memory Info (Linux)
+	if data, err := os.ReadFile("/proc/meminfo"); err == nil {
+		lines := strings.Split(string(data), "\n")
+		var total, available uint64
+		for _, line := range lines {
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				continue
+			}
+			val := parseMemValue(fields[1]) // KB
+			if strings.HasPrefix(fields[0], "MemTotal") {
+				total = val * 1024
+			} else if strings.HasPrefix(fields[0], "MemAvailable") {
+				available = val * 1024
+			}
+		}
+		stats.RAMTotal = total
+		stats.RAMUsed = total - available
+	}
+
+	// 2. CPU Load & Temp
+	stats.CPUUsage = getCPULoad()
+	stats.CPUTemp = getCPUTemp()
+
+	// 3. Network Interfaces
+	if ifaces, err := net.Interfaces(); err == nil {
+		for _, i := range ifaces {
+			// Filter loopback and down
+			if i.Flags&net.FlagUp != 0 && i.Flags&net.FlagLoopback == 0 {
+				stats.Interfaces = append(stats.Interfaces, i.Name)
+			}
+		}
+	}
+
+	// 4. Network Speed
+	stats.NetRxSpeed, stats.NetTxSpeed = getNetSpeed()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
+}
+
+func parseMemValue(s string) uint64 {
+	var v uint64
+	fmt.Sscanf(s, "%d", &v)
+	return v
+}
+
+var lastIdle, lastTotal uint64
+
+func getCPULoad() float64 {
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return 0
+	}
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[0] == "cpu" {
+			var user, nice, system, idle, iowait, irq, softirq, steal uint64
+			fmt.Sscanf(fields[1], "%d", &user)
+			fmt.Sscanf(fields[2], "%d", &nice)
+			fmt.Sscanf(fields[3], "%d", &system)
+			fmt.Sscanf(fields[4], "%d", &idle)
+			fmt.Sscanf(fields[5], "%d", &iowait)
+			fmt.Sscanf(fields[6], "%d", &irq)
+			fmt.Sscanf(fields[7], "%d", &softirq)
+			fmt.Sscanf(fields[8], "%d", &steal)
+
+			total := user + nice + system + idle + iowait + irq + softirq + steal
+			idleTotal := idle + iowait
+
+			diffTotal := total - lastTotal
+			diffIdle := idleTotal - lastIdle
+
+			lastTotal = total
+			lastIdle = idleTotal
+
+			if diffTotal == 0 {
+				return 0
+			}
+			return float64(diffTotal-diffIdle) / float64(diffTotal) * 100
+		}
+	}
+	return 0
+}
+
+func getCPUTemp() float64 {
+	// Try standard thermal zone
+	data, err := os.ReadFile("/sys/class/thermal/thermal_zone0/temp")
+	if err != nil {
+		return 0
+	}
+	var temp int
+	fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &temp)
+	return float64(temp) / 1000.0
+}
+
+var (
+	lastNetRx, lastNetTx uint64
+	lastNetTime          time.Time
+)
+
+func getNetSpeed() (rxKBps, txKBps float64) {
+	data, err := os.ReadFile("/proc/net/dev")
+	if err != nil {
+		return 0, 0
+	}
+
+	var currentRx, currentTx uint64
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		// Skip headers
+		if strings.Contains(line, ":") {
+			parts := strings.Split(line, ":")
+			if len(parts) < 2 {
+				continue
+			}
+			fields := strings.Fields(parts[1])
+			if len(fields) < 9 {
+				continue
+			}
+			// Sum up all interfaces (except lo ideally, but sum is fine for load estimation)
+			if strings.TrimSpace(parts[0]) == "lo" {
+				continue
+			}
+
+			var rx, tx uint64
+			fmt.Sscanf(fields[0], "%d", &rx)
+			fmt.Sscanf(fields[8], "%d", &tx)
+
+			currentRx += rx
+			currentTx += tx
+		}
+	}
+
+	now := time.Now()
+	if lastNetTime.IsZero() {
+		lastNetRx = currentRx
+		lastNetTx = currentTx
+		lastNetTime = now
+		return 0, 0
+	}
+
+	duration := now.Sub(lastNetTime).Seconds()
+	if duration <= 0 {
+		return 0, 0
+	}
+
+	rxKBps = float64(currentRx-lastNetRx) / 1024.0 / duration
+	txKBps = float64(currentTx-lastNetTx) / 1024.0 / duration
+
+	lastNetRx = currentRx
+	lastNetTx = currentTx
+	lastNetTime = now
+
+	return rxKBps, txKBps
+}
+
 func handleUpdateConfig(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }
 func handleSerialPorts(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode([]string{"/dev/ttyACM0"})
@@ -431,8 +651,45 @@ func handleWifiScan(w http.ResponseWriter, r *http.Request) {
 }
 func handleSaveConfig(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }
 func handleLogs(w http.ResponseWriter, r *http.Request) {
-	content, _ := os.ReadFile("api.log") // Only API logs for now
-	json.NewEncoder(w).Encode(strings.Split(string(content), "\n"))
+	service := r.URL.Query().Get("service")
+	filename := "api.log" // Default
+
+	switch service {
+	case "camera":
+		filename = "camera.log"
+	case "telemetry":
+		filename = "telemetry.log"
+	case "zerotier":
+		filename = "zerotier.log"
+	case "livekit":
+		filename = "livekit.log"
+	}
+
+	// Try reading from local dir first (Dev), then /var/log/vyom/ (Prod)
+	content, err := os.ReadFile(filename)
+	if err != nil {
+		content, err = os.ReadFile("/var/log/vyom/" + filename)
+	}
+
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Log file not found: %s", filename), http.StatusNotFound)
+		return
+	}
+
+	if r.URL.Query().Get("download") == "true" {
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write(content)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	// Return last 100 lines
+	lines := strings.Split(string(content), "\n")
+	if len(lines) > 200 {
+		lines = lines[len(lines)-200:]
+	}
+	json.NewEncoder(w).Encode(lines)
 }
 
 func getOutboundIP() string {

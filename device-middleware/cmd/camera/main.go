@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
@@ -75,16 +76,21 @@ func main() {
 }
 
 func runGStreamerPipeline() {
+	// Pipeline Formats to Try in Order
+	formats := []struct {
+		Name string
+		Caps string
+	}{
+		{"MJPEG", "image/jpeg,width=640,height=480,framerate=30/1 ! jpegdec"},   // Fastest, common for webcams
+		{"YUY2", "video/x-raw,format=YUY2,width=640,height=480,framerate=30/1"}, // Uncompressed Common
+		{"ANY", "decodebin"}, // Fallback
+	}
+
+	currentFormatIdx := 0
+	consecutiveFailures := 0
+
 	for {
 		log.Println("[Camera] Starting GStreamer Pipeline...")
-
-		width := "640"
-		height := "480"
-
-		// Pipeline Logic:
-		// 1. Check if 'libcamerasrc' exists (Preferred for RPi)
-		// 2. Check /dev/video0 (Fallback)
-		// 3. TestSrc (Fallback)
 
 		src := ""
 		hasLibCamera := false
@@ -96,15 +102,15 @@ func runGStreamerPipeline() {
 		}
 
 		if hasLibCamera {
-			log.Println("[Camera] 'libcamerasrc' found. Using libcamera pipeline.")
-			// libcamerasrc automatically handles ISP and format negotiation.
-			src = fmt.Sprintf("libcamerasrc ! video/x-raw,width=%s,height=%s,framerate=30/1", width, height)
+			log.Println("[Camera] 'libcamerasrc' found. Using libcamera.")
+			src = "libcamerasrc ! video/x-raw,width=640,height=480,framerate=30/1 ! videoconvert"
 		} else if _, err := os.Stat("/dev/video0"); err == nil {
-			log.Println("[Camera] Found /dev/video0 (v4l2src).")
-			src = fmt.Sprintf("v4l2src device=/dev/video0 ! videoconvert ! video/x-raw,format=I420,width=%s,height=%s,framerate=30/1", width, height)
+			format := formats[currentFormatIdx]
+			log.Printf("[Camera] Found /dev/video0. Attempting Format: %s", format.Name)
+			src = fmt.Sprintf("v4l2src device=/dev/video0 ! %s ! videoconvert ! video/x-raw,format=I420,width=640,height=480,framerate=30/1", format.Caps)
 		} else {
 			log.Println("[Camera] No camera found. Using testsrc (Snow).")
-			src = fmt.Sprintf("videotestsrc is-live=true pattern=snow ! videoconvert ! video/x-raw,format=I420,width=%s,height=%s,framerate=30/1", width, height)
+			src = "videotestsrc is-live=true pattern=snow ! videoconvert ! video/x-raw,format=I420,width=640,height=480,framerate=30/1"
 		}
 
 		// Use queues to prevent blocking.
@@ -129,11 +135,15 @@ func runGStreamerPipeline() {
 			continue
 		}
 
-		// Read Loop
+		// Read Loop checking for stream health
 		buf := make([]byte, 4096)
+		started := time.Now()
+		bytesReadTotal := 0
+
 		for {
 			n, err := stdout.Read(buf)
 			if n > 0 {
+				bytesReadTotal += n
 				// Copy data to broadcast
 				chunk := make([]byte, n)
 				copy(chunk, buf[:n])
@@ -146,7 +156,25 @@ func runGStreamerPipeline() {
 		}
 
 		cmd.Wait()
-		log.Println("[Camera] Pipeline exited. Restarting in 2s...")
+		duration := time.Since(started)
+		log.Printf("[Camera] Pipeline exited after %v. Bytes read: %d", duration, bytesReadTotal)
+
+		// Failure Handling strategy
+		// If it ran for less than 5 seconds or read 0 bytes, consider it a failure of this format
+		if duration < 5*time.Second || bytesReadTotal == 0 {
+			consecutiveFailures++
+			if consecutiveFailures >= 2 && !hasLibCamera && src != "" && !strings.Contains(src, "videotestsrc") {
+				// Try next format
+				currentFormatIdx = (currentFormatIdx + 1) % len(formats)
+				log.Printf("⚠️ Format failed. Switching to next format: %s", formats[currentFormatIdx].Name)
+				consecutiveFailures = 0
+			}
+		} else {
+			// If it ran successfully for a while, reset consecutive failures
+			consecutiveFailures = 0
+		}
+
+		log.Println("[Camera] Restarting in 2s...")
 		time.Sleep(2 * time.Second)
 	}
 }

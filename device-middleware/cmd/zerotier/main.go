@@ -18,10 +18,18 @@ const (
 )
 
 type ZeroTierStatus struct {
-	State     string `json:"state"`
-	NetworkID string `json:"network_id"`
-	IPAddress string `json:"ip_address"`
-	LastError string `json:"last_error"`
+	State     string         `json:"state"`
+	NetworkID string         `json:"network_id"`
+	IPAddress string         `json:"ip_address"`
+	LastError string         `json:"last_error"`
+	Peers     []ZeroTierPeer `json:"peers"`
+}
+
+type ZeroTierPeer struct {
+	Address string `json:"address"`
+	Version string `json:"version"`
+	Latency int    `json:"latency"`
+	Role    string `json:"role"`
 }
 
 // Reuse the robust helper from the monolithic main.go
@@ -37,13 +45,12 @@ func runZeroTier(args ...string) (string, error) {
 
 	// Check if already root
 	if strings.Contains(err.Error(), "permission denied") || os.Geteuid() != 0 {
-		log.Printf("[ZeroTier] Direct execution failed (%v). Trying sudo...", err)
 		sudoArgs := append([]string{"-n", ztPath}, args...)
 		cmdSudo := exec.Command("sudo", sudoArgs...)
 		outSudo, errSudo := cmdSudo.CombinedOutput()
 
 		if errSudo != nil {
-			log.Printf("[ZeroTier] Sudo execution also failed: %v", errSudo)
+			log.Printf("[ZeroTier] Sudo execution execution failed: %v", errSudo)
 			return string(out), err
 		}
 		return string(outSudo), nil
@@ -56,65 +63,62 @@ func main() {
 	log.Println("🚀 Starting Vyom ZeroTier Service...")
 
 	client := &http.Client{Timeout: 5 * time.Second}
+	var desiredNetworkID string
 
 	for {
-		status := checkZeroTier()
-
-		// 2. Report Status to vyom-api
-		payload, _ := json.Marshal(status)
-		resp, err := client.Post(API_URL+"/internal/zerotier", "application/json", bytes.NewBuffer(payload))
-		if err != nil {
-			log.Printf("⚠️ Failed to report status to API: %v", err)
-		} else {
+		// 1. Fetch Config First
+		resp, err := client.Get(API_URL + "/api/config/zerotier")
+		if err == nil && resp.StatusCode == 200 {
+			var config struct {
+				NetworkID string `json:"network_id"`
+			}
+			if json.NewDecoder(resp.Body).Decode(&config) == nil {
+				desiredNetworkID = config.NetworkID
+			}
 			resp.Body.Close()
 		}
 
-		// 3. Auto-Join Logic
-		// Only check if we are NOT connected to the desired network
-		go func() {
-			resp, err := client.Get(API_URL + "/api/config/zerotier")
-			if err == nil && resp.StatusCode == 200 {
-				var config struct {
-					NetworkID string `json:"network_id"`
-				}
-				if json.NewDecoder(resp.Body).Decode(&config) == nil {
-					resp.Body.Close()
-					if config.NetworkID != "" && config.NetworkID != status.NetworkID {
-						log.Printf("🔄 ZeroTier Config Change Detected! Joining %s...", config.NetworkID)
+		// 2. Check Status (Strict Mode)
+		status := checkZeroTier(desiredNetworkID)
 
-						// If we are on another network, leave it first?
-						// ZeroTier supports multiple, but for this device use case, maybe 1 is better?
-						// For now, just JOIN.
+		// 3. Report Status to vyom-api
+		payload, _ := json.Marshal(status)
+		postResp, err := client.Post(API_URL+"/internal/zerotier", "application/json", bytes.NewBuffer(payload))
+		if err != nil {
+			log.Printf("⚠️ Failed to report status to API: %v", err)
+		} else {
+			postResp.Body.Close()
+		}
 
-						out, err := runZeroTier("join", config.NetworkID)
-						log.Printf("Join Result: %s (Err: %v)", out, err)
-					}
-				} else {
-					resp.Body.Close()
-				}
-			} else if err != nil {
-				log.Printf("Failed to fetch ZT config: %v", err)
-			} else {
-				resp.Body.Close()
-			}
-		}()
+		// 4. Auto-Join Logic
+		if desiredNetworkID != "" && desiredNetworkID != status.NetworkID {
+			log.Printf("🔄 ZeroTier Config Change/Mismatch! Joining %s...", desiredNetworkID)
+			out, err := runZeroTier("join", desiredNetworkID)
+			log.Printf("Join Result: %s (Err: %v)", out, err)
+		}
 
 		time.Sleep(10 * time.Second)
 	}
 }
 
-func checkZeroTier() ZeroTierStatus {
+func checkZeroTier(desiredID string) ZeroTierStatus {
 	var status ZeroTierStatus
 	status.State = "Unknown"
+	status.NetworkID = desiredID // Default to desired
+	status.Peers = []ZeroTierPeer{}
 
-	// Use JSON output for robustness
-	out, err := runZeroTier("-j", "listnetworks")
-	if err != nil {
-		status.LastError = fmt.Sprintf("CLI Error: %v", err)
+	if desiredID == "" {
+		status.State = "Not Configured"
 		return status
 	}
 
-	// Output is a JSON array of objects
+	// 1. Get Network Status
+	out, err := runZeroTier("-j", "listnetworks")
+	if err != nil {
+		status.LastError = fmt.Sprintf("CLI Not Found/Err: %v", err)
+		return status
+	}
+
 	type ZTNetwork struct {
 		ID            string   `json:"nwid"`
 		Name          string   `json:"name"`
@@ -124,30 +128,54 @@ func checkZeroTier() ZeroTierStatus {
 	}
 
 	var networks []ZTNetwork
-	if err := json.Unmarshal([]byte(out), &networks); err != nil {
-		log.Printf("[ZeroTier] JSON Parse Error: %v. Raw: %s", err, out)
-		// Fallback to text parsing if JSON is invalid
-		status.LastError = "JSON Parse Error"
-		return status
-	}
-
-	if len(networks) > 0 {
-		nw := networks[0]
-		status.NetworkID = nw.ID
-		status.State = nw.Status
-		if len(nw.AssignedAddrs) > 0 {
-			// e.g. "172.25.x.x/16"
-			status.IPAddress = strings.Split(nw.AssignedAddrs[0], "/")[0]
+	if err := json.Unmarshal([]byte(out), &networks); err == nil {
+		found := false
+		for _, nw := range networks {
+			if nw.ID == desiredID {
+				found = true
+				status.NetworkID = nw.ID
+				status.State = nw.Status
+				if len(nw.AssignedAddrs) > 0 {
+					status.IPAddress = strings.Split(nw.AssignedAddrs[0], "/")[0]
+				}
+				break
+			}
 		}
-		log.Printf("[ZeroTier] Parsed (JSON): ID=%s State=%s IP=%s", status.NetworkID, status.State, status.IPAddress)
+		if !found {
+			status.State = "Disconnected"
+		} else if status.State == "OK" {
+			status.State = "Connected"
+		}
 	} else {
-		status.State = "Not Configured"
+		status.LastError = "JSON Parse Error (Networks)"
 	}
 
-	if status.State == "OK" {
-		status.State = "Connected"
+	// 2. Get Peers
+	outPeers, err := runZeroTier("-j", "listpeers")
+	if err == nil {
+		type ZTPeer struct {
+			Address string `json:"address"`
+			Version string `json:"version"`
+			Latency int    `json:"latency"`
+			Role    string `json:"role"`
+			Paths   []any  `json:"paths"`
+		}
+		var peers []ZTPeer
+		if json.Unmarshal([]byte(outPeers), &peers) == nil {
+			for _, p := range peers {
+				// Filter out inactive/unreachable peers if desired, or keep all
+				// Keeping all for visibility, maybe filter locally.
+				status.Peers = append(status.Peers, ZeroTierPeer{
+					Address: p.Address,
+					Version: p.Version,
+					Latency: p.Latency,
+					Role:    p.Role,
+				})
+			}
+		}
 	}
-	log.Printf("[ZeroTier] Final Report: ID=%s State=%s IP=%s", status.NetworkID, status.State, status.IPAddress)
+
+	log.Printf("[ZeroTier] Report: ID=%s State=%s IP=%s Peers=%d", status.NetworkID, status.State, status.IPAddress, len(status.Peers))
 
 	return status
 }

@@ -38,8 +38,8 @@ package: all
 	
 	# Copy Binaries
 	cp bin/* $(PKG_DIR)/opt/vyom/bin/
-	
-	# No script needed anymore
+	cp start_microservices.sh $(PKG_DIR)/opt/vyom/bin/
+	chmod +x $(PKG_DIR)/opt/vyom/bin/start_microservices.sh
 	
 	# Copy UI (Check if dist exists, if not warn)
 	if [ -d "ui/dist" ]; then \
@@ -48,12 +48,8 @@ package: all
 		echo "⚠️  UI dist not found. Run 'make ui' first if needed."; \
 	fi
 	
-	# Copy Systemd Services
-	cp vyom-api.service $(PKG_DIR)/etc/systemd/system/
-	cp vyom-zerotier.service $(PKG_DIR)/etc/systemd/system/
-	cp vyom-telemetry.service $(PKG_DIR)/etc/systemd/system/
-	cp vyom-livekit.service $(PKG_DIR)/etc/systemd/system/
-	cp vyom-camera.service $(PKG_DIR)/etc/systemd/system/
+	# Copy Systemd Services (Monolithic)
+	cp vyom-middleware.service $(PKG_DIR)/etc/systemd/system/
 	
 	# Create Control File
 	echo "Package: $(PKG_NAME)" > $(PKG_DIR)/DEBIAN/control
@@ -70,12 +66,11 @@ package: all
 	echo "set -e" >> $(PKG_DIR)/DEBIAN/postinst
 	echo "chmod +x /opt/vyom/bin/*" >> $(PKG_DIR)/DEBIAN/postinst
 	echo "systemctl daemon-reload" >> $(PKG_DIR)/DEBIAN/postinst
-	echo "systemctl daemon-reload" >> $(PKG_DIR)/DEBIAN/postinst
 	echo "mkdir -p /var/log/vyom" >> $(PKG_DIR)/DEBIAN/postinst
 	echo "chmod 755 /var/log/vyom" >> $(PKG_DIR)/DEBIAN/postinst
-	echo "systemctl enable vyom-api vyom-zerotier vyom-telemetry vyom-livekit vyom-camera" >> $(PKG_DIR)/DEBIAN/postinst
+	echo "systemctl enable vyom-middleware" >> $(PKG_DIR)/DEBIAN/postinst
 	echo "echo '✅ Vyom Middleware Installed.'" >> $(PKG_DIR)/DEBIAN/postinst
-	echo "echo 'Run \"systemctl start vyom-api\" to begin.'" >> $(PKG_DIR)/DEBIAN/postinst
+	echo "echo 'Run \"systemctl start vyom-middleware\" to begin.'" >> $(PKG_DIR)/DEBIAN/postinst
 	chmod 0755 $(PKG_DIR)/DEBIAN/postinst
 	
 	# Build Deb

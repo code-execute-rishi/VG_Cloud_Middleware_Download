@@ -13,21 +13,30 @@ LOG_DIR="/var/log/vyom"
 
 mkdir -p $LOG_DIR
 
-if [ ! -d "$BIN_DIR" ]; then
-    echo "⚠️  Bin directory not found at $BIN_DIR. Using local './bin' for dev."
+# Check local bin first for dev priority
+if [ -d "./bin" ]; then
+    echo "⚠️  Found local './bin'. Using local development binaries."
     BIN_DIR="./bin"
     LOG_DIR="./logs"
     mkdir -p $LOG_DIR
+elif [ ! -d "$BIN_DIR" ]; then
+    echo "❌ Bin directory not found at $BIN_DIR or ./bin"
+    exit 1
 fi
 
 echo "✅ Launching Services from $BIN_DIR..."
 
 # cleanup old
-pkill -f vyom-api
-pkill -f vyom-zerotier
-pkill -f vyom-telemetry
-pkill -f vyom-livekit
-pkill -f vyom-camera
+pkill -9 -f vyom-api
+pkill -9 -f vyom-zerotier
+pkill -9 -f vyom-telemetry
+pkill -9 -f vyom-livekit
+pkill -9 -f vyom-camera
+
+# Force kill anything on port 8081 (Camera)
+fuser -k -9 8081/tcp > /dev/null 2>&1
+
+sleep 2
 
 # Start API Service (with auto-restart loop)
 echo "🚀 Starting API Service..."

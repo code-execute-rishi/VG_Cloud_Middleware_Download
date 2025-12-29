@@ -49,8 +49,11 @@ const Sidebar = ({ systemInfo, isClaimed, isConnected, userInfo }) => {
                 <NavLink to="/camera" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                     <span className="label">Settings & Video</span>
                 </NavLink>
-                <NavLink to="/logs" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                    <span className="label">System Logs</span>
+                <NavLink to="/monitoring" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+                    <span className="label">Device Monitoring</span>
+                </NavLink>
+                <NavLink to="/zerotier" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+                    <span className="label">ZeroTier VPN</span>
                 </NavLink>
                 <NavLink to="/flight-controller" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
                     <span className="label">Flight Controller</span>
@@ -92,7 +95,46 @@ const Sidebar = ({ systemInfo, isClaimed, isConnected, userInfo }) => {
                         </span>
                     </div>
                 </div>
-                <div className="version-info">
+
+                {/* Restart & Reset Button */}
+                <div style={{ marginTop: '12px' }}>
+                    <button
+                        onClick={() => {
+                            if (confirm("⚠️ FACTORY RESET & RESTART ⚠️\n\nThis will delete your configuration (Identity & WiFi) and restart the middleware.\n\nAre you sure you want to proceed?")) {
+                                fetch("/api/restart", { method: "POST" })
+                                    .then(() => {
+                                        alert("Reset initiated. The dashboard will reload shortly.");
+                                        setTimeout(() => window.location.reload(), 15000);
+                                    })
+                                    .catch(e => alert("Error: " + e));
+                            }
+                        }}
+                        style={{
+                            width: '100%',
+                            padding: '10px 12px',
+                            background: '#fff1f2', // Lighter red for better blend
+                            color: '#e11d48',      // Rose-600
+                            border: '1px solid #fda4af', // Rose-300
+                            borderRadius: '10px',
+                            cursor: 'pointer',
+                            fontWeight: '600',
+                            fontSize: '0.8rem',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '8px',
+                            transition: 'all 0.2s',
+                            boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
+                        }}
+                        onMouseOver={(e) => { e.currentTarget.style.background = '#ffe4e6'; e.currentTarget.style.borderColor = '#f43f5e'; }}
+                        onMouseOut={(e) => { e.currentTarget.style.background = '#fff1f2'; e.currentTarget.style.borderColor = '#fda4af'; }}
+                    >
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" /><path d="M16 16h5v5" /></svg>
+                        Restart & Reset
+                    </button>
+                </div>
+
+                <div className="version-info" style={{ marginTop: '15px' }}>
                     v2.5.0
                 </div>
             </div>
