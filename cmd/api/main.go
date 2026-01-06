@@ -44,11 +44,15 @@ func init() {
 }
 
 type ConfigFile struct {
-	SSID       string `json:"ssid"`
-	Password   string `json:"password"`
-	Resolution string `json:"resolution"`
-	FCPort     string `json:"fc_port"`
-	FCBaud     int    `json:"fc_baud"`
+	SSID         string `json:"ssid"`
+	Password     string `json:"password"`
+	Resolution   string `json:"resolution"`
+	CameraDevice string `json:"camera_device"` // e.g. "USB Camera (/dev/video4)"
+	CameraType   string `json:"camera_type"`   // e.g. "usb", "csi"
+	FCPort       string `json:"fc_port"`
+	FCBaud       int    `json:"fc_baud"`
+	LiveKitURL   string `json:"livekit_url"`
+	LiveKitToken string `json:"livekit_token"`
 }
 
 type ConnectionState string
@@ -66,6 +70,8 @@ const (
 	TelemetryStatusFile = StatusDir + "/telemetry.json"
 )
 
+var configFileMutex sync.Mutex
+
 type AuthStatus struct {
 	ConnectURL string `json:"connect_url"`
 }
@@ -73,20 +79,30 @@ type AuthStatus struct {
 // --- Structs (Matching Dashboard Expectations) ---
 
 type GlobalDeviceStatus struct {
-	IsConfigured bool             `json:"is_configured"`
-	IsConnected  bool             `json:"is_connected"`
-	IsClaimed    bool             `json:"is_claimed"`
-	Camera       CameraConfig     `json:"camera_config"`
-	Hardware     HardwareStatus   `json:"hardware_status"`
-	LiveKit      LiveKitStatus    `json:"livekit_status"`
-	ZeroTier     ZeroTierStatus   `json:"zerotier_status"`
-	Telemetry    *TelemetryStatus `json:"telemetry,omitempty"`
-	Auth         AuthStatus       `json:"auth_status"`
-	User         *auth.UserClaims `json:"user_info,omitempty"`
+	IsConfigured  bool             `json:"is_configured"`
+	IsConnected   bool             `json:"is_connected"`
+	IsClaimed     bool             `json:"is_claimed"`
+	Camera        CameraConfig     `json:"camera_config"`
+	Hardware      HardwareStatus   `json:"hardware_status"`
+	LiveKitConfig LiveKitConfig    `json:"livekit_config"`
+	LiveKit       LiveKitStatus    `json:"livekit_status"`
+	ZeroTier      ZeroTierStatus   `json:"zerotier_status"`
+	Telemetry     *TelemetryStatus `json:"telemetry,omitempty"`
+	Auth          AuthStatus       `json:"auth_status"`
+	User          *auth.UserClaims `json:"user_info,omitempty"`
 }
 
 type CameraConfig struct {
-	Resolution string `json:"resolution"`
+	Resolution   string `json:"resolution"`
+	CameraType   string `json:"camera_type,omitempty"`
+	CameraDevice string `json:"camera_device,omitempty"`
+	FCPort       string `json:"fc_port"`
+	FCBaud       int    `json:"fc_baud"`
+}
+
+type LiveKitConfig struct {
+	LiveKitURL string `json:"livekit_url"`
+	Token      string `json:"token"`
 }
 
 type HardwareStatus struct {
@@ -95,10 +111,11 @@ type HardwareStatus struct {
 }
 
 type TelemetryStatus struct {
-	Battery *SysStatus      `json:"battery"`
-	GPS     *GpsRaw         `json:"gps"`
-	HUD     *VfrHud         `json:"hud"`
-	System  *TelemetryState `json:"system"`
+	Battery     *SysStatus      `json:"battery"`
+	GPS         *GpsRaw         `json:"gps"`
+	HUD         *VfrHud         `json:"hud"`
+	System      *TelemetryState `json:"system"`
+	FCConnected bool            `json:"fc_connected"`
 }
 type TelemetryState struct {
 	Armed bool   `json:"armed"`
@@ -125,10 +142,18 @@ type LiveKitStatus struct {
 }
 
 type ZeroTierStatus struct {
-	State     string `json:"state"`
-	NetworkID string `json:"network_id"`
-	IPAddress string `json:"ip_address"`
-	LastError string `json:"last_error"`
+	State     string         `json:"state"`
+	NetworkID string         `json:"network_id"`
+	IPAddress string         `json:"ip_address"`
+	LastError string         `json:"last_error"`
+	Peers     []ZeroTierPeer `json:"peers"`
+}
+
+type ZeroTierPeer struct {
+	Address string `json:"address"`
+	Version string `json:"version"`
+	Latency int    `json:"latency"`
+	Role    string `json:"role"`
 }
 
 func CleanupPort(port int) {
@@ -152,6 +177,7 @@ func CleanupPort(port int) {
 }
 
 func main() {
+	log.Println(">>> VYOM MIDDLEWARE API - VERSION: DEBUG-TRACE-2 <<<")
 	CleanupPort(8085)
 	resetFlag := flag.Bool("reset", false, "Reset configuration and identity")
 	flag.Parse()
@@ -182,6 +208,7 @@ func startWebServer() {
 	log.Printf("\n>>> WEB UI AVAILABLE: http://%s%s <<<\n", ip, SetupPort)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/system-info", handleSystemInfo)
+	mux.HandleFunc("/api/system-stats", handleSystemStats)
 	mux.HandleFunc("/api/status", handleStatus)
 	mux.HandleFunc("/api/update-config", handleUpdateConfig)
 
@@ -201,6 +228,7 @@ func startWebServer() {
 	mux.HandleFunc("/api/stream", handleLocalStream)
 	mux.HandleFunc("/api/cameras", handleCameras)
 	mux.HandleFunc("/api/config/zerotier", handleZeroTierConfig)
+	mux.HandleFunc("/api/restart", handleRestart)
 
 	uiDir := "./ui/dist"
 	if _, err := os.Stat(uiDir); os.IsNotExist(err) {
@@ -216,6 +244,42 @@ func startWebServer() {
 	}
 }
 
+func handleRestart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	log.Println("⚠️ RESTART REQUESTED: Deleting config and restarting middleware...")
+
+	// 1. Delete Config Files
+	os.Remove(ConfigFileName)
+	os.Remove(backend.IdentityFile)
+
+	// 2. Clear Status Files (Prevent stale state)
+	os.RemoveAll(StatusDir)
+
+	// 3. Restart Service
+	// Attempt systemctl restart first
+	go func() {
+		// Wait a second to let the response go through
+		time.Sleep(1 * time.Second)
+
+		// Restart all microservices
+		services := []string{"vyom-api", "vyom-camera", "vyom-telemetry", "vyom-livekit", "vyom-zerotier"}
+		args := append([]string{"restart"}, services...)
+		cmd := exec.Command("systemctl", args...)
+
+		if err := cmd.Run(); err != nil {
+			log.Printf("❌ systemctl restart failed: %v. Attempting manual exit.", err)
+			os.Exit(0)
+		}
+	}()
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Middleware Restarting..."))
+}
+
 func runStateLoop() {
 	// Start Status Aggregator
 	go aggregateStatus()
@@ -223,9 +287,28 @@ func runStateLoop() {
 	go checkHardwareStatus()
 
 	for {
-		_, err := os.ReadFile(ConfigFileName)
+
+		configFileMutex.Lock()
+		data, err := os.ReadFile(ConfigFileName)
+		configFileMutex.Unlock()
 
 		isConfigured := (err == nil)
+
+		if isConfigured {
+			var cfg ConfigFile
+			if json.Unmarshal(data, &cfg) == nil {
+				deviceStatusMutex.Lock()
+				deviceStatus.Camera.Resolution = cfg.Resolution
+				deviceStatus.Camera.CameraDevice = cfg.CameraDevice
+				deviceStatus.Camera.CameraType = cfg.CameraType
+				deviceStatus.Camera.FCPort = cfg.FCPort
+				deviceStatus.Camera.FCBaud = cfg.FCBaud
+
+				deviceStatus.LiveKitConfig.LiveKitURL = cfg.LiveKitURL
+				deviceStatus.LiveKitConfig.Token = cfg.LiveKitToken
+				deviceStatusMutex.Unlock()
+			}
+		}
 
 		deviceStatusMutex.Lock()
 		deviceStatus.IsConfigured = isConfigured
@@ -331,6 +414,7 @@ func aggregateStatus() {
 			if json.Unmarshal(data, &telem) == nil {
 				deviceStatusMutex.Lock()
 				deviceStatus.Telemetry = &telem
+				deviceStatus.Hardware.FCConnected = telem.FCConnected
 				deviceStatusMutex.Unlock()
 			}
 		}
@@ -422,7 +506,263 @@ func handleSystemInfo(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-func handleUpdateConfig(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }
+func handleSystemStats(w http.ResponseWriter, r *http.Request) {
+	type SystemStats struct {
+		CPUUsage   float64  `json:"cpu_usage"`
+		CPUTemp    float64  `json:"cpu_temp"` // NEW
+		RAMUsed    uint64   `json:"ram_used"`
+		RAMTotal   uint64   `json:"ram_total"`
+		DiskUsed   uint64   `json:"disk_used"`
+		DiskTotal  uint64   `json:"disk_total"`
+		Interfaces []string `json:"interfaces"`
+		NetRxSpeed float64  `json:"net_rx_speed"` // KB/s
+		NetTxSpeed float64  `json:"net_tx_speed"` // KB/s
+	}
+
+	var stats SystemStats
+
+	// 1. Get Memory Info (Linux)
+	if data, err := os.ReadFile("/proc/meminfo"); err == nil {
+		lines := strings.Split(string(data), "\n")
+		var total, available uint64
+		for _, line := range lines {
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				continue
+			}
+			val := parseMemValue(fields[1]) // KB
+			if strings.HasPrefix(fields[0], "MemTotal") {
+				total = val * 1024
+			} else if strings.HasPrefix(fields[0], "MemAvailable") {
+				available = val * 1024
+			}
+		}
+		stats.RAMTotal = total
+		stats.RAMUsed = total - available
+	}
+
+	// 2. CPU Load & Temp
+	stats.CPUUsage = getCPULoad()
+	stats.CPUTemp = getCPUTemp()
+
+	// 3. Network Interfaces
+	if ifaces, err := net.Interfaces(); err == nil {
+		for _, i := range ifaces {
+			// Filter loopback and down
+			if i.Flags&net.FlagUp != 0 && i.Flags&net.FlagLoopback == 0 {
+				stats.Interfaces = append(stats.Interfaces, i.Name)
+			}
+		}
+	}
+
+	// 4. Network Speed
+	stats.NetRxSpeed, stats.NetTxSpeed = getNetSpeed()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
+}
+
+func parseMemValue(s string) uint64 {
+	var v uint64
+	fmt.Sscanf(s, "%d", &v)
+	return v
+}
+
+var lastIdle, lastTotal uint64
+
+func getCPULoad() float64 {
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return 0
+	}
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[0] == "cpu" {
+			var user, nice, system, idle, iowait, irq, softirq, steal uint64
+			fmt.Sscanf(fields[1], "%d", &user)
+			fmt.Sscanf(fields[2], "%d", &nice)
+			fmt.Sscanf(fields[3], "%d", &system)
+			fmt.Sscanf(fields[4], "%d", &idle)
+			fmt.Sscanf(fields[5], "%d", &iowait)
+			fmt.Sscanf(fields[6], "%d", &irq)
+			fmt.Sscanf(fields[7], "%d", &softirq)
+			fmt.Sscanf(fields[8], "%d", &steal)
+
+			total := user + nice + system + idle + iowait + irq + softirq + steal
+			idleTotal := idle + iowait
+
+			diffTotal := total - lastTotal
+			diffIdle := idleTotal - lastIdle
+
+			lastTotal = total
+			lastIdle = idleTotal
+
+			if diffTotal == 0 {
+				return 0
+			}
+			return float64(diffTotal-diffIdle) / float64(diffTotal) * 100
+		}
+	}
+	return 0
+}
+
+func getCPUTemp() float64 {
+	// Try standard thermal zone
+	data, err := os.ReadFile("/sys/class/thermal/thermal_zone0/temp")
+	if err != nil {
+		return 0
+	}
+	var temp int
+	fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &temp)
+	return float64(temp) / 1000.0
+}
+
+var (
+	lastNetRx, lastNetTx uint64
+	lastNetTime          time.Time
+)
+
+func getNetSpeed() (rxKBps, txKBps float64) {
+	data, err := os.ReadFile("/proc/net/dev")
+	if err != nil {
+		return 0, 0
+	}
+
+	var currentRx, currentTx uint64
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		// Skip headers
+		if strings.Contains(line, ":") {
+			parts := strings.Split(line, ":")
+			if len(parts) < 2 {
+				continue
+			}
+			fields := strings.Fields(parts[1])
+			if len(fields) < 9 {
+				continue
+			}
+			// Sum up all interfaces (except lo ideally, but sum is fine for load estimation)
+			if strings.TrimSpace(parts[0]) == "lo" {
+				continue
+			}
+
+			var rx, tx uint64
+			fmt.Sscanf(fields[0], "%d", &rx)
+			fmt.Sscanf(fields[8], "%d", &tx)
+
+			currentRx += rx
+			currentTx += tx
+		}
+	}
+
+	now := time.Now()
+	if lastNetTime.IsZero() {
+		lastNetRx = currentRx
+		lastNetTx = currentTx
+		lastNetTime = now
+		return 0, 0
+	}
+
+	duration := now.Sub(lastNetTime).Seconds()
+	if duration <= 0 {
+		return 0, 0
+	}
+
+	rxKBps = float64(currentRx-lastNetRx) / 1024.0 / duration
+	txKBps = float64(currentTx-lastNetTx) / 1024.0 / duration
+
+	lastNetRx = currentRx
+	lastNetTx = currentTx
+	lastNetTime = now
+
+	return rxKBps, txKBps
+}
+
+func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read body", http.StatusInternalServerError)
+		return
+	}
+	defer r.Body.Close()
+
+	configFileMutex.Lock()
+	defer configFileMutex.Unlock()
+
+	// 1. Read Existing Config
+	var configMap map[string]interface{}
+	data, err := os.ReadFile(ConfigFileName)
+	if err == nil {
+		if err := json.Unmarshal(data, &configMap); err != nil {
+			log.Printf("[API] [Error] Corrupt config file read: %v. Aborting update to prevent data loss.", err)
+			http.Error(w, "Internal Configuration Error (Read)", http.StatusInternalServerError)
+			return
+		}
+	}
+	if configMap == nil {
+		// Only valid if file doesn't exist. If it exists but failed to unmarshal, we returned above.
+		configMap = make(map[string]interface{})
+	}
+
+	// 2. Parse Incoming Partial Update
+	var updateMap map[string]interface{}
+	if err := json.Unmarshal(body, &updateMap); err != nil {
+		log.Printf("[API] Failed to parse update JSON: %v", err)
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// 3. Merge Updates
+	for k, v := range updateMap {
+		configMap[k] = v
+	}
+
+	// 4. Write Back Full Config (Atomic Update)
+	finalBytes, err := json.MarshalIndent(configMap, "", "  ")
+	if err != nil {
+		http.Error(w, "Failed to marshal config", http.StatusInternalServerError)
+		return
+	}
+
+	// Write to temp file first
+	tmpFile := ConfigFileName + ".tmp"
+	if err := os.WriteFile(tmpFile, finalBytes, 0644); err != nil {
+		log.Printf("[API] Failed to write temp config: %v", err)
+		http.Error(w, "Failed to save config", http.StatusInternalServerError)
+		return
+	}
+	// Rename to atomic replace
+	if err := os.Rename(tmpFile, ConfigFileName); err != nil {
+		log.Printf("[API] Failed to rename config: %v", err)
+		http.Error(w, "Failed to save config", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("[API] Configuration Updated (Merged/Atomic): %s", string(finalBytes))
+
+	// 5. Update Memory State Immediately (Fix Race Condition)
+	var cfg ConfigFile
+	if json.Unmarshal(finalBytes, &cfg) == nil {
+		deviceStatusMutex.Lock()
+		deviceStatus.Camera.Resolution = cfg.Resolution
+		deviceStatus.Camera.CameraDevice = cfg.CameraDevice
+		deviceStatus.Camera.CameraType = cfg.CameraType
+		deviceStatus.Camera.FCPort = cfg.FCPort
+		deviceStatus.Camera.FCBaud = cfg.FCBaud
+
+		deviceStatus.LiveKitConfig.LiveKitURL = cfg.LiveKitURL
+		deviceStatus.LiveKitConfig.Token = cfg.LiveKitToken
+		deviceStatusMutex.Unlock()
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
 func handleSerialPorts(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode([]string{"/dev/ttyACM0"})
 }
@@ -431,8 +771,53 @@ func handleWifiScan(w http.ResponseWriter, r *http.Request) {
 }
 func handleSaveConfig(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }
 func handleLogs(w http.ResponseWriter, r *http.Request) {
-	content, _ := os.ReadFile("api.log") // Only API logs for now
-	json.NewEncoder(w).Encode(strings.Split(string(content), "\n"))
+	service := strings.ToLower(r.URL.Query().Get("service"))
+	log.Printf("[DEBUG-TRACE] handleLogs: raw='%s' normalized='%s'", r.URL.Query().Get("service"), service)
+
+	var filename string
+	switch service {
+	case "camera":
+		filename = "camera.log"
+	case "telemetry":
+		filename = "telemetry.log"
+	case "zerotier":
+		filename = "zerotier.log"
+	case "livekit":
+		filename = "livekit.log"
+	case "", "api":
+		filename = "api.log"
+	default:
+		// Do NOT fallback to api.log for unknown services
+		http.Error(w, fmt.Sprintf("Unknown service: %s", service), http.StatusBadRequest)
+		return
+	}
+
+	// Prioritize Production Logs
+	content, err := os.ReadFile("/var/log/vyom/" + filename)
+	if err != nil {
+		// Fallback to local (Dev)
+		content, err = os.ReadFile(filename)
+	}
+
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Log file not found: %s", filename), http.StatusNotFound)
+		return
+	}
+
+	if r.URL.Query().Get("download") == "true" {
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write(content)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	// Return last 100 lines
+	lines := strings.Split(string(content), "\n")
+	if len(lines) > 200 {
+		lines = lines[len(lines)-200:]
+	}
+	json.NewEncoder(w).Encode(lines)
 }
 
 func getOutboundIP() string {
@@ -456,9 +841,58 @@ func corsMiddleware(next http.Handler) http.Handler {
 }
 
 func handleCameras(w http.ResponseWriter, r *http.Request) {
-	// Mock response to satisfy UI
-	// UI expects []string, not []map[string]string
-	cameras := []string{"/dev/video0"}
+	var cameras []string
+	// Run v4l2-ctl --list-devices
+	out, err := exec.Command("v4l2-ctl", "--list-devices").Output()
+	if err == nil {
+		log.Printf("[API] raw v4l2 output: %s", string(out)) // Log for debugging
+		lines := strings.Split(string(out), "\n")
+		var currentName string
+		for _, line := range lines {
+			if line == "" {
+				continue
+			}
+			// Device group header (ends with colon)
+			if strings.HasSuffix(line, ":") {
+				currentName = strings.TrimSuffix(strings.TrimSpace(line), ":")
+				// Clean up name (remove bus info if present)
+				if idx := strings.LastIndex(currentName, "("); idx > 0 {
+					currentName = strings.TrimSpace(currentName[:idx])
+				}
+				// Clean extra colons
+				currentName = strings.TrimSuffix(currentName, ":")
+			} else if strings.HasPrefix(strings.TrimSpace(line), "/dev/video") {
+				// Device path
+				devPath := strings.TrimSpace(line)
+
+				// Duplicate Check by NAME only (we only want one entry per physical camera group)
+				alreadyAdded := false
+				for _, cam := range cameras {
+					if strings.HasPrefix(cam, currentName) {
+						alreadyAdded = true
+						break
+					}
+				}
+
+				if !alreadyAdded {
+					cameras = append(cameras, fmt.Sprintf("%s (%s)", currentName, devPath))
+				}
+			}
+		}
+	} else {
+		log.Printf("[API] v4l2-ctl failed: %v", err)
+		// Fallback to simple file scan if v4l2-ctl missing
+		files, _ := os.ReadDir("/dev")
+		for _, f := range files {
+			if strings.HasPrefix(f.Name(), "video") {
+				cameras = append(cameras, "/dev/"+f.Name())
+			}
+		}
+	}
+	if len(cameras) == 0 {
+		cameras = []string{}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(cameras)
 }
@@ -535,47 +969,64 @@ func handleGCSEndpoints(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleLiveKitConfig(w http.ResponseWriter, r *http.Request) {
+	// 1. Check Manual Config First
+	deviceStatusMutex.RLock()
+	manualURL := deviceStatus.LiveKitConfig.LiveKitURL
+	manualToken := deviceStatus.LiveKitConfig.Token
+	deviceStatusMutex.RUnlock()
+
+	if manualURL != "" && manualToken != "" {
+		log.Println("[API] Using Manual LiveKit Config from demo_config.json")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(struct {
+			Token      string `json:"token"`
+			LiveKitURL string `json:"livekit_url"`
+		}{
+			Token:      manualToken,
+			LiveKitURL: manualURL,
+		})
+		return
+	}
+
+	// 2. Fallback to Auto-Provisioning (Also retrieves Manual Config from Cloud)
 	if apiClient == nil || apiClient.Identity == nil {
 		http.Error(w, "Identity not loaded", http.StatusServiceUnavailable)
 		return
 	}
 
-	// Get Token
-	_, err := apiClient.Authenticate()
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to auth/get livekit token: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// We need URL as well, usually in Identity or Env?
-	// internal/backend/client.go: LKTokenResponse has "livekit_url".
-	// Authenticate() calls GetLiveKitToken but fails to return URL in VerifyResponse?
-	// Let's check Authenticate implementation.
-	// VerifyResponse struct has "LiveKitToken" and "RoomName". No URL.
-	// But `GetLiveKitToken` returns `LKTokenResponse` which HAS `LiveKitURL`.
-	// We should probably call GetLiveKitToken directly here if Authenticate loses data,
-	// OR assumes it's sending back what Authenticate returns.
-
-	// Let's call GetLiveKitToken directly.
+	// ENABLED: Required to fetch manual config entered in Cloud Frontend.
+	// NOTE: This also enables auto-provisioning if backend supports it.
 	lkResp, err := apiClient.GetLiveKitToken(apiClient.Identity.DeviceID)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get livekit token (direct): %v", err), http.StatusInternalServerError)
+	if err == nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(lkResp)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(lkResp)
+	// Return 404 to indicate "Not Configured"
+	http.Error(w, "LiveKit Not Configured", http.StatusNotFound)
 }
 
 func handleTelemetryConfig(w http.ResponseWriter, r *http.Request) {
-	// For now, return default auto/57600
+	deviceStatusMutex.RLock()
+	defer deviceStatusMutex.RUnlock()
+
+	fcPort := deviceStatus.Camera.FCPort
+	if fcPort == "" {
+		fcPort = "auto"
+	}
+	fcBaud := deviceStatus.Camera.FCBaud
+	if fcBaud == 0 {
+		fcBaud = 57600
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(struct {
 		FCPort string `json:"fc_port"`
 		FCBaud int    `json:"fc_baud"`
 	}{
-		FCPort: "auto",
-		FCBaud: 57600,
+		FCPort: fcPort,
+		FCBaud: fcBaud,
 	})
 }
 

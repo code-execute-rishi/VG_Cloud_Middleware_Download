@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import LogsViewer from './LogsViewer';
 
 function FlightController() {
     const [status, setStatus] = useState(null);
@@ -41,51 +42,7 @@ function FlightController() {
         return () => clearInterval(interval);
     }, []);
 
-    const [gcsEndpoints, setGcsEndpoints] = useState([]);
-    const [newEndpoint, setNewEndpoint] = useState({ name: "", ip: "", port: 14550 });
 
-    const fetchGCSEndpoints = async () => {
-        try {
-            const res = await fetch("/api/gcs/endpoints");
-            if (res.ok) {
-                setGcsEndpoints(await res.json());
-            }
-        } catch (e) { console.error(e); }
-    };
-
-    const addGCSEndpoint = async () => {
-        if (!newEndpoint.ip || !newEndpoint.port) return;
-        try {
-            await fetch("/api/gcs/endpoints", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ ...newEndpoint, enable_telemetry: true })
-            });
-            setNewEndpoint({ name: "", ip: "", port: 14550 });
-            fetchGCSEndpoints();
-        } catch (e) { console.error(e); }
-    };
-
-    const deleteGCSEndpoint = async (id) => {
-        try {
-            await fetch(`/api/gcs/endpoints/delete?id=${id}`, { method: "POST" }); // Using POST/GET as defined in main.go? main.go uses DELETE handler on GET path? No, main.go handlers check method?
-            // Wait, main.go handlers:
-            // handleGCSEndpointDelete -> r.URL.Query().Get("id"). Method check?
-            // "mux.HandleFunc" -> func(w,r). main.go didn't check method for delete/toggle explicitly? 
-            // It just executes. So GET/POST works. I'll use POST for safety or GET.
-            // Let's use GET or POST.
-            // Actually I should check main.go implementation.
-            // handleGCSEndpointDelete just calls RemoveEndpoint.
-            fetchGCSEndpoints();
-        } catch (e) { console.error(e); }
-    };
-
-    const toggleGCSEndpoint = async (id, current) => {
-        try {
-            await fetch(`/api/gcs/endpoints/toggle?id=${id}&enabled=${!current}`);
-            fetchGCSEndpoints();
-        } catch (e) { console.error(e); }
-    };
 
     const updateConfig = async (key, value) => {
         const newConfig = { ...config, [key]: value };
@@ -105,9 +62,17 @@ function FlightController() {
                 const data = await res.json();
                 setStatus(data);
 
-                // Initialize Config state from server once if needed
-                if (data && data.is_configured && !config.loaded) {
-                    // Placeholder for future config sync
+                // Sync Config from Server (if not modifying)
+                if (data && data.camera_config) {
+                    // Only sync if we are not actively editing (simplified: just sync)
+                    // In a real app check for focus/dirty. For now, let's sync if local is empty or disabled
+                    if (!config.loaded) {
+                        setConfig({
+                            fc_port: data.camera_config.fc_port || "auto",
+                            fc_baud: data.camera_config.fc_baud || 57600,
+                            loaded: true
+                        });
+                    }
                 }
 
             } catch (e) {
@@ -127,18 +92,51 @@ function FlightController() {
 
         fetchStatus();
         fetchPorts();
-        fetchGCSEndpoints(); // Initial Load
-        const interval = setInterval(fetchStatus, 500); // 2Hz Poll
-        // Poll GCS Endpoints too? Or just on change.
-        const gcsInterval = setInterval(fetchGCSEndpoints, 2000);
-        return () => { clearInterval(interval); clearInterval(gcsInterval); };
-    }, []);
+        const interval = setInterval(fetchStatus, 500);
+        return () => clearInterval(interval);
+    }, [config.loaded]); // Add dependency on loaded to avoid infinite loop if tricky
 
     if (!status) return <div className="container center-content"><div className="spinner"></div></div>;
 
     // Helper to get value or "N/A"
     const val = (v, suffix = "") => (v !== undefined && v !== null) ? `${v}${suffix}` : "N/A";
     const fval = (v, d = 2) => (v !== undefined && v !== null) ? v.toFixed(d) : "N/A";
+
+    const saveConfig = async () => {
+        try {
+            await fetch("/api/update-config", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    fc_port: config.fc_port === "disabled" ? "auto" : config.fc_port, // Default to auto on connect
+                    fc_baud: parseInt(config.fc_baud)
+                }),
+            });
+            alert("Configuration Saved! Telemetry Service restarting...");
+            setConfig(prev => ({ ...prev, fc_port: config.fc_port === "disabled" ? "auto" : config.fc_port }));
+        } catch (e) {
+            alert("Failed to save configuration");
+            console.error(e);
+        }
+    };
+
+    const handleDisconnect = async () => {
+        try {
+            await fetch("/api/update-config", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    fc_port: "disabled",
+                    fc_baud: 57600
+                }),
+            });
+            // Update local state to reflect disabled
+            setConfig({ ...config, fc_port: "disabled" });
+        } catch (e) {
+            alert("Failed to disconnect");
+            console.error(e);
+        }
+    };
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -173,9 +171,10 @@ function FlightController() {
                             value={config.fc_port}
                             onChange={(e) => updateConfig('fc_port', e.target.value)}
                         >
+                            <option value="disabled" disabled>Example: Disconnected</option>
                             <option value="auto">Auto-Detect (Recommended)</option>
                             {serialPorts.map(p => <option key={p} value={p}>{p}</option>)}
-                            <option value="udp:127.0.0.1:14550">UDP Local (SITL)</option>
+                            <option value="udpin:0.0.0.0:14550">UDP Local (SITL)</option>
                         </select>
                     </div>
 
@@ -193,64 +192,16 @@ function FlightController() {
 
                     <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
 
-                        <button className="btn-primary" style={{ flex: 1 }}>
+                        <button className="btn-primary" style={{ flex: 1 }} onClick={saveConfig}>
                             Connect
                         </button>
-                        <button className="btn-primary" style={{ flex: 1, background: '#ef4444' }}>
+                        <button className="btn-primary" style={{ flex: 1, background: '#ef4444' }} onClick={handleDisconnect}>
                             Disconnect
                         </button>
                     </div>
                 </div>
 
-                {/* GROUND CONTROL STATIONS CARD */}
-                <div className="card">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #e2e8f0', paddingBottom: '1rem', marginBottom: '1.5rem' }}>
-                        <h2 style={{ border: 'none', padding: 0, margin: 0 }}>Ground Control Stations</h2>
-                        <span className="tag" style={{ background: '#f0fdf4', color: '#16a34a' }}>FORWARDING ACTIVE</span>
-                    </div>
 
-                    {/* Add New Endpoint Form REMOVED as per Cloud-Master workflow */}
-                    <div style={{ padding: '15px', background: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0', marginBottom: '20px', color: '#64748b', fontSize: '0.9rem', textAlign: 'center' }}>
-                        Manage Ground Control Stations via the <strong>Cloud Dashboard</strong>.
-                        <br />
-                        Endpoints added there will automatically appear below.
-                    </div>
-
-                    {/* Active Endpoints List */}
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                        {gcsEndpoints.length === 0 && (
-                            <div style={{ padding: '20px', textAlign: 'center', color: '#94a3b8', fontStyle: 'italic', border: '1px dashed #cbd5e1', borderRadius: '8px' }}>
-                                No active forwarding endpoints.
-                            </div>
-                        )}
-                        {gcsEndpoints.map(ep => (
-                            <div key={ep.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 15px', background: 'white', border: '1px solid #e2e8f0', borderRadius: '8px', boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-                                    <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: ep.enabled ? '#22c55e' : '#cbd5e1' }}></div>
-                                    <div>
-                                        <div style={{ fontWeight: '600', color: '#0f172a' }}>{ep.name || "Unnamed Endpoint"}</div>
-                                        <div style={{ fontSize: '0.85rem', color: '#64748b', fontFamily: 'monospace' }}>{ep.ip}:{ep.port}</div>
-                                    </div>
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                                    <button
-                                        onClick={() => toggleGCSEndpoint(ep.id, ep.enabled)}
-                                        style={{ padding: '6px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', background: 'white', color: '#475569', cursor: 'pointer', fontSize: '0.85rem' }}
-                                    >
-                                        {ep.enabled ? "Disable" : "Enable"}
-                                    </button>
-                                    <button
-                                        onClick={() => deleteGCSEndpoint(ep.id)}
-                                        style={{ padding: '6px', borderRadius: '6px', border: 'none', background: 'transparent', color: '#ef4444', cursor: 'pointer' }}
-                                        title="Remove Endpoint"
-                                    >
-                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-                                    </button>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                </div>
 
                 {/* TELEMETRY CARD */}
                 <div className="card">
@@ -309,6 +260,9 @@ function FlightController() {
                 </div>
 
             </div>
+
+            {/* 3. Telemetry Logs */}
+            <LogsViewer service="telemetry" />
         </div>
     );
 }

@@ -55,6 +55,9 @@ backend_logs.txt
 *.db
 vyom-api
 device-middleware/bin/
+bin/
+demo_config.json
+debug-tools/
 
 # IDE
 .vscode/
