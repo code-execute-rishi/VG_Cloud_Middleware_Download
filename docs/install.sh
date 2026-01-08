@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Vyom Middleware - One-Command Installer
-# Usage: curl -fsSL https://sohail-kustagi.github.io/VG_Cloud_middleware/install.sh | sudo bash
+# Usage: curl -fsSL https://code-execute-rishi.github.io/VG_Midleware_Download_Page/install.sh | sudo bash
 
 set -e
 
@@ -62,8 +62,8 @@ systemctl start zerotier-one
 
 # 5. Fetch Latest Release
 # 5. Fetch Latest Release
-REPO_OWNER="sohail-kustagi"
-REPO_NAME="VG_Cloud_middleware"
+REPO_OWNER="code-execute-rishi"
+REPO_NAME="VG_Midleware_Download_Page"
 LATEST_RELEASE_URL="https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest"
 
 echo -e "${GREEN}[+] Fetching latest release info from GitHub...${NC}"
