@@ -7,32 +7,63 @@ PKG_DIR := deb_package
 DEB_NAME := $(PKG_NAME)_$(VERSION)_$(ARCH).deb
 
 EXTRA_DEPENDS :=
+GO_ARCH := $(ARCH)
+GO_ARM :=
+
 ifeq ($(ARCH),arm64)
 	EXTRA_DEPENDS := gstreamer1.0-libcamera,
+	GO_ARCH := arm64
 endif
+ifeq ($(ARCH),armhf)
+	EXTRA_DEPENDS := gstreamer1.0-libcamera,
+	GO_ARCH := arm
+	GO_ARM := 7
+endif
+
+.PHONY: package-all package-arm64 package-armhf package-amd64 clean clean-bin
+
+package-all: package-amd64 package-arm64 package-armhf
+
+package-arm64:
+	$(MAKE) clean-bin
+	@echo "BUILDING ARM64..."
+	$(MAKE) package ARCH=arm64
+
+package-armhf:
+	$(MAKE) clean-bin
+	@echo "BUILDING ARMHF..."
+	$(MAKE) package ARCH=armhf
+
+package-amd64:
+	$(MAKE) clean-bin
+	@echo "BUILDING AMD64..."
+	$(MAKE) package ARCH=amd64
 
 all: api zerotier telemetry livekit camera
 
 api:
-	GOOS=linux GOARCH=$(ARCH) go build -o bin/vyom-api cmd/api/main.go
+	GOOS=linux GOARCH=$(GO_ARCH) GOARM=$(GO_ARM) go build -o bin/vyom-api cmd/api/main.go
 
 zerotier:
-	GOOS=linux GOARCH=$(ARCH) go build -o bin/vyom-zerotier cmd/zerotier/main.go
+	GOOS=linux GOARCH=$(GO_ARCH) GOARM=$(GO_ARM) go build -o bin/vyom-zerotier cmd/zerotier/main.go
 
 telemetry:
-	GOOS=linux GOARCH=$(ARCH) go build -o bin/vyom-telemetry cmd/telemetry/main.go
+	GOOS=linux GOARCH=$(GO_ARCH) GOARM=$(GO_ARM) go build -o bin/vyom-telemetry cmd/telemetry/main.go
 
 livekit:
-	GOOS=linux GOARCH=$(ARCH) go build -o bin/vyom-livekit cmd/livekit/main.go
+	GOOS=linux GOARCH=$(GO_ARCH) GOARM=$(GO_ARM) go build -o bin/vyom-livekit cmd/livekit/main.go
 
 camera:
-	GOOS=linux GOARCH=$(ARCH) go build -o bin/vyom-camera cmd/camera/main.go
+	GOOS=linux GOARCH=$(GO_ARCH) GOARM=$(GO_ARM) go build -o bin/vyom-camera cmd/camera/main.go
 
 ui:
 	cd ui && npm install && npm run build
 
 clean:
 	rm -rf bin/ $(PKG_DIR) *.deb
+
+clean-bin:
+	rm -rf bin/ $(PKG_DIR)
 
 package: all ui
 	@echo "📦 Packaging $(PKG_NAME)..."
@@ -81,7 +112,8 @@ package: all ui
 	echo "systemctl daemon-reload" >> $(PKG_DIR)/DEBIAN/postinst
 	echo "mkdir -p /var/log/vyom" >> $(PKG_DIR)/DEBIAN/postinst
 	echo "chmod 755 /var/log/vyom" >> $(PKG_DIR)/DEBIAN/postinst
-	echo "chmod 755 /var/log/vyom" >> $(PKG_DIR)/DEBIAN/postinst
+	echo "mkdir -p /etc/vyom" >> $(PKG_DIR)/DEBIAN/postinst
+	echo "chmod 777 /etc/vyom" >> $(PKG_DIR)/DEBIAN/postinst
 	
 	# Cleanup Legacy
 	# Cleanup Legacy (Quiet)

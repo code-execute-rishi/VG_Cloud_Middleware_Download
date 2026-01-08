@@ -82,7 +82,10 @@ function AppContent() {
       setLoading(true);
       const res = await fetch("/api/save-config", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": status?.auth_status?.token ? `Bearer ${status.auth_status.token}` : ""
+        },
         body: JSON.stringify({ ssid: formData.ssid, password: formData.password }),
       });
       if (!res.ok) throw new Error("Result not OK");
@@ -99,13 +102,15 @@ function AppContent() {
       setLoading(true);
       await fetch("/api/update-config", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": status?.auth_status?.token ? `Bearer ${status.auth_status.token}` : ""
+        },
         body: JSON.stringify({
           resolution: formData.resolution,
           camera_type: formData.camera_type,
-          camera_device: formData.camera_device,
-          fc_port: formData.fc_port,
-          fc_baud: parseInt(formData.fc_baud)
+          camera_device: formData.camera_device
+          // fc_port & fc_baud removed to prevent overwriting FC connection from Camera View
         }),
       });
       alert("Settings Updated!");

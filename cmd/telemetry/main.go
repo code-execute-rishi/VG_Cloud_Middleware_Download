@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"log"
 	"net"
@@ -208,6 +209,49 @@ func main() {
 		select {} // Block forever (waiting for config change restart)
 	}
 
+	// Start API Reporter (Send status to API Service)
+	go func() {
+		client := &http.Client{Timeout: 500 * time.Millisecond}
+		ticker := time.NewTicker(1 * time.Second)
+		for range ticker.C {
+			telemMutex.Lock()
+
+			// Check Staleness
+			if time.Since(lastHeartbeat) > 3*time.Second {
+				telemMutex.Unlock()
+				continue // Do not report stale data (Let API timeout)
+			}
+
+			// Prepare minimal status updates for API
+			update := map[string]interface{}{
+				"latitude":        0.0,
+				"longitude":       0.0,
+				"altitude":        0.0,
+				"speed":           0.0,
+				"heading":         0.0,
+				"signal_strength": 100,
+				"battery":         0,
+				"flight_mode":     lastTelem.Mode,
+			}
+			if lastTelem.GlobalPositionInt != nil {
+				update["latitude"] = float64(lastTelem.GlobalPositionInt.Lat) / 1e7
+				update["longitude"] = float64(lastTelem.GlobalPositionInt.Lon) / 1e7
+				update["altitude"] = float32(lastTelem.GlobalPositionInt.Alt) / 1000.0
+			}
+			if lastTelem.VfrHud != nil {
+				update["heading"] = float32(lastTelem.VfrHud.Heading)
+				update["speed"] = lastTelem.VfrHud.Groundspeed
+			}
+			if lastTelem.SysStatus != nil {
+				update["battery"] = lastTelem.SysStatus.BatteryRemaining
+			}
+			telemMutex.Unlock()
+
+			data, _ := json.Marshal(update)
+			client.Post(API_URL+"/internal/telemetry", "application/json", bytes.NewBuffer(data))
+		}
+	}()
+
 	// 5. Main Reconnection Loop
 	for {
 		runMavlinkSession(config)
@@ -249,14 +293,36 @@ func runMavlinkSession(config TelemetryConfig) {
 		}
 
 	} else {
-		// Manual Config
+		// Manual Config with Basic Validation to prevent arbitrary SSRF/Command Injection
 		if strings.HasPrefix(config.FCPort, "tcp:") {
-			endpoints = []gomavlib.EndpointConf{gomavlib.EndpointTCPClient{Address: strings.TrimPrefix(config.FCPort, "tcp:")}}
+			addr := strings.TrimPrefix(config.FCPort, "tcp:")
+			if !isValidNetworkAddress(addr) {
+				log.Printf("[Security] Invalid TCP Address rejected: %s", addr)
+				return // Early exit, auto-restart loop will retry
+			}
+			endpoints = []gomavlib.EndpointConf{gomavlib.EndpointTCPClient{Address: addr}}
 		} else if strings.HasPrefix(config.FCPort, "udpin:") {
-			endpoints = []gomavlib.EndpointConf{gomavlib.EndpointUDPServer{Address: strings.TrimPrefix(config.FCPort, "udpin:")}}
+			addr := strings.TrimPrefix(config.FCPort, "udpin:")
+			// UDP Server usually binds local, less risk, but validate format
+			if !isValidNetworkAddress(addr) {
+				log.Printf("[Security] Invalid UDP Bind Address rejected: %s", addr)
+				return
+			}
+			endpoints = []gomavlib.EndpointConf{gomavlib.EndpointUDPServer{Address: addr}}
 		} else if strings.HasPrefix(config.FCPort, "udp:") {
-			endpoints = []gomavlib.EndpointConf{gomavlib.EndpointUDPClient{Address: strings.TrimPrefix(config.FCPort, "udp:")}}
+			addr := strings.TrimPrefix(config.FCPort, "udp:")
+			if !isValidNetworkAddress(addr) {
+				log.Printf("[Security] Invalid UDP Address rejected: %s", addr)
+				return
+			}
+			endpoints = []gomavlib.EndpointConf{gomavlib.EndpointUDPClient{Address: addr}}
 		} else {
+			// Serial Device
+			// Simple check to ensure it looks like a device path or COM port
+			if !strings.HasPrefix(config.FCPort, "/dev/") && !strings.HasPrefix(config.FCPort, "COM") {
+				log.Printf("[Security] Invalid Serial Port Rejected: %s", config.FCPort)
+				return
+			}
 			endpoints = []gomavlib.EndpointConf{gomavlib.EndpointSerial{Device: config.FCPort, Baud: config.FCBaud}}
 		}
 	}
@@ -389,4 +455,21 @@ func runMavlinkSession(config TelemetryConfig) {
 			}
 		}
 	}
+}
+
+// Simple validator for host:port
+func isValidNetworkAddress(addr string) bool {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "" || port == "" {
+		return false
+	}
+	// Allow IP addresses (v4/v6) and "localhost"
+	// Block other hostnames to prevent DNS rebinding or internal scanning via name
+	if host != "localhost" && net.ParseIP(host) == nil {
+		return false
+	}
+	return true
 }

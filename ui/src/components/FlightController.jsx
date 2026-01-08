@@ -8,6 +8,7 @@ function FlightController() {
         fc_port: "auto",
         fc_baud: 57600
     });
+    const [connecting, setConnecting] = useState(false);
 
     useEffect(() => {
         const fetchStatus = async () => {
@@ -102,7 +103,10 @@ function FlightController() {
     const val = (v, suffix = "") => (v !== undefined && v !== null) ? `${v}${suffix}` : "N/A";
     const fval = (v, d = 2) => (v !== undefined && v !== null) ? v.toFixed(d) : "N/A";
 
+
+
     const saveConfig = async () => {
+        setConnecting(true);
         try {
             await fetch("/api/update-config", {
                 method: "POST",
@@ -112,9 +116,27 @@ function FlightController() {
                     fc_baud: parseInt(config.fc_baud)
                 }),
             });
-            alert("Configuration Saved! Telemetry Service restarting...");
-            setConfig(prev => ({ ...prev, fc_port: config.fc_port === "disabled" ? "auto" : config.fc_port }));
+
+            // Poll for success (10s timeout)
+            const startTime = Date.now();
+            const checkSuccess = setInterval(async () => {
+                const res = await fetch("/api/status");
+                const data = await res.json();
+
+                if (data?.hardware_status?.fc_connected) {
+                    clearInterval(checkSuccess);
+                    setConnecting(false);
+                    alert("✅ Connection Successful!");
+                    setConfig(prev => ({ ...prev, fc_port: config.fc_port === "disabled" ? "auto" : config.fc_port }));
+                } else if (Date.now() - startTime > 10000) {
+                    clearInterval(checkSuccess);
+                    setConnecting(false);
+                    alert("❌ Connection Timed Out.\n\nNo heartbeat received from Flight Controller.\nPlease check:\n1. USB Connection\n2. Power Supply\n3. Correct Baud Rate");
+                }
+            }, 1000);
+
         } catch (e) {
+            setConnecting(false);
             alert("Failed to save configuration");
             console.error(e);
         }
@@ -192,8 +214,8 @@ function FlightController() {
 
                     <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
 
-                        <button className="btn-primary" style={{ flex: 1 }} onClick={saveConfig}>
-                            Connect
+                        <button className="btn-primary" style={{ flex: 1 }} onClick={saveConfig} disabled={connecting}>
+                            {connecting ? "Connecting..." : "Connect"}
                         </button>
                         <button className="btn-primary" style={{ flex: 1, background: '#ef4444' }} onClick={handleDisconnect}>
                             Disconnect

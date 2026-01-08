@@ -38,6 +38,12 @@ jobs:
         mv *.deb dist/vyom-middleware_latest_arm64.deb
         echo "✅ Built ARM64"
 
+    - name: Build ARMHF Package (32-bit)
+      run: |
+        make package ARCH=armhf
+        mv *.deb dist/vyom-middleware_latest_armhf.deb
+        echo "✅ Built ARMHF"
+
     - name: Upload Debian Packages (Artifacts)
       uses: actions/upload-artifact@v4
       with:
@@ -57,6 +63,7 @@ jobs:
           
           **Download Links:**
           - [amd64.deb](https://github.com/${{ github.repository }}/releases/download/nightly/vyom-middleware_latest_amd64.deb) (PC/Laptop/Cloud)
-          - [arm64.deb](https://github.com/${{ github.repository }}/releases/download/nightly/vyom-middleware_latest_arm64.deb) (Raspberry Pi)
+          - [arm64.deb](https://github.com/${{ github.repository }}/releases/download/nightly/vyom-middleware_latest_arm64.deb) (Raspberry Pi 3/4/5)
+          - [armhf.deb](https://github.com/${{ github.repository }}/releases/download/nightly/vyom-middleware_latest_armhf.deb) (Raspberry Pi Zero 2 / Older 32-bit)
         files: dist/*.deb
         prerelease: true

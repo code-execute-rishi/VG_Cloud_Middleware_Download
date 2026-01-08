@@ -129,8 +129,13 @@ func checkZeroTier(desiredID string) ZeroTierStatus {
 
 	var networks []ZTNetwork
 	if err := json.Unmarshal([]byte(out), &networks); err == nil {
+		var fallback *ZTNetwork
 		found := false
-		for _, nw := range networks {
+		for i, nw := range networks {
+			if nw.Status == "OK" && fallback == nil {
+				fallback = &networks[i]
+			}
+
 			if nw.ID == desiredID {
 				found = true
 				status.NetworkID = nw.ID
@@ -141,8 +146,18 @@ func checkZeroTier(desiredID string) ZeroTierStatus {
 				break
 			}
 		}
+
 		if !found {
-			status.State = "Disconnected"
+			if fallback != nil {
+				// Fallback to the first healthy network found
+				status.NetworkID = fallback.ID
+				status.State = fallback.Status
+				if len(fallback.AssignedAddrs) > 0 {
+					status.IPAddress = strings.Split(fallback.AssignedAddrs[0], "/")[0]
+				}
+			} else {
+				status.State = "Disconnected"
+			}
 		} else if status.State == "OK" {
 			status.State = "Connected"
 		}

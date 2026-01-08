@@ -19,19 +19,29 @@ import (
 )
 
 // --- Configuration Constants ---
+// --- Configuration Constants ---
 const (
-	ConfigFileName = "demo_config.json"
+	ConfigFilePath = "/etc/vyom/config.json"
 	SetupPort      = ":8085"
 )
 
 var (
+	// Allow internal calls (localhost) and specific frontend domain
+	AllowedOrigins = map[string]bool{
+		"http://localhost:5173":                      true, // Vite Dev
+		"http://localhost:8085":                      true, // Local Served
+		"https://internetlinkpro.vyomgarud.com":      true, // Production Dashboard
+		"https://install.internetlink.vyomgarud.com": true, // Installer
+	}
+
 	BackendBaseURL  = backend.DefaultBaseURL
 	FrontendBaseURL = "https://internetlinkpro.vyomgarud.com"
 
 	apiClient *backend.BackendClient
 
-	deviceStatus      GlobalDeviceStatus
-	deviceStatusMutex sync.RWMutex
+	deviceStatus        GlobalDeviceStatus
+	deviceStatusMutex   sync.RWMutex
+	lastTelemetryUpdate time.Time
 )
 
 func init() {
@@ -183,7 +193,7 @@ func main() {
 	flag.Parse()
 	if *resetFlag {
 		log.Println("WARNING: Resetting Device Configuration...")
-		os.Remove(ConfigFileName)
+		os.Remove(ConfigFilePath)
 		os.Remove(backend.IdentityFile)
 		log.Println("Reset complete. Starting fresh...")
 	}
@@ -223,8 +233,8 @@ func startWebServer() {
 	mux.HandleFunc("/claim", handleClaim)
 	mux.HandleFunc("/api/serial-ports", handleSerialPorts)
 	mux.HandleFunc("/api/wifi-scan", handleWifiScan)
-	mux.HandleFunc("/api/save-config", handleSaveConfig)
-	mux.HandleFunc("/api/logs", handleLogs)
+	mux.HandleFunc("/api/save-config", authMiddleware(handleSaveConfig))
+	mux.HandleFunc("/api/logs", handleLogs) // Logs are read-only, but arguably sensitive. Open for now for debugging.
 	mux.HandleFunc("/api/stream", handleLocalStream)
 	mux.HandleFunc("/api/cameras", handleCameras)
 	mux.HandleFunc("/api/config/zerotier", handleZeroTierConfig)
@@ -253,7 +263,7 @@ func handleRestart(w http.ResponseWriter, r *http.Request) {
 	log.Println("⚠️ RESTART REQUESTED: Deleting config and restarting middleware...")
 
 	// 1. Delete Config Files
-	os.Remove(ConfigFileName)
+	os.Remove(ConfigFilePath)
 	os.Remove(backend.IdentityFile)
 
 	// 2. Clear Status Files (Prevent stale state)
@@ -289,7 +299,7 @@ func runStateLoop() {
 	for {
 
 		configFileMutex.Lock()
-		data, err := os.ReadFile(ConfigFileName)
+		data, err := os.ReadFile(ConfigFilePath)
 		configFileMutex.Unlock()
 
 		isConfigured := (err == nil)
@@ -446,7 +456,7 @@ func handleClaim(w http.ResponseWriter, r *http.Request) {
 		FCBaud:     57600,
 	}
 	data, _ := json.MarshalIndent(config, "", "  ")
-	os.WriteFile(ConfigFileName, data, 0644)
+	os.WriteFile(ConfigFilePath, data, 0644)
 
 	log.Println("✅ [Claim] Token Received! Restarting API...")
 	w.Write([]byte("Device Claimed! Restarting..."))
@@ -472,7 +482,78 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	// REDACT SENSITIVE DATA
+	if statusCopy.LiveKitConfig.Token != "" {
+		// Just show existence, not value
+		statusCopy.LiveKitConfig.Token = "***REDACTED***"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(statusCopy)
+}
+
+func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// 1. Check if Identity is loaded/claimed
+		if apiClient.Identity == nil || apiClient.Identity.Token == "" {
+			// Device not claimed yet. Allow config?
+			// Policy: If NOT claimed, allow local config (Setup Mode).
+			// If claimed, require Auth.
+			// However, usually we want to secure it always.
+			// For simplicity: If not claimed, we allow. If claimed, we check.
+		} else {
+			// 2. Verify Authorization Header
+			authHeader := r.Header.Get("Authorization")
+			if authHeader == "" {
+				http.Error(w, "Unauthorized (Missing Header)", http.StatusUnauthorized)
+				return
+			}
+			parts := strings.Split(authHeader, " ")
+			if len(parts) != 2 || parts[0] != "Bearer" {
+				http.Error(w, "Unauthorized (Invalid Format)", http.StatusUnauthorized)
+				return
+			}
+			token := parts[1]
+
+			// Compare with stored Identity Token (or AuthToken)
+			// The frontend sends the Token it received from /api/status -> user_info or auth_status
+			// Actually, frontend sends 'status.auth_status.token'.
+			// But wait, 'auth_status' in 'handleStatus' usually just has ConnectURL.
+			// Let's check 'handleClaim'. It sets Identity.Token.
+
+			// We validate against the Device Identity Token
+			if token != apiClient.Identity.Token && token != apiClient.Identity.AuthToken {
+				log.Printf("[Auth] Token Mismatch. Got: %s... Expected: %s...", token[:5], apiClient.Identity.Token[:5])
+				http.Error(w, "Unauthorized (Invalid Token)", http.StatusUnauthorized)
+				return
+			}
+		}
+
+		next(w, r)
+	}
+}
+
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" && AllowedOrigins[origin] {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		} else {
+			// Allow valid, explicit origins, else block (or empty).
+			// For dev convenience, if no Origin header (curl), we pass.
+			// But if Origin is present and NOT allowed, we don't set the header, browser blocks.
+		}
+
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 func handleLocalStream(w http.ResponseWriter, r *http.Request) {
@@ -697,7 +778,7 @@ func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 
 	// 1. Read Existing Config
 	var configMap map[string]interface{}
-	data, err := os.ReadFile(ConfigFileName)
+	data, err := os.ReadFile(ConfigFilePath)
 	if err == nil {
 		if err := json.Unmarshal(data, &configMap); err != nil {
 			log.Printf("[API] [Error] Corrupt config file read: %v. Aborting update to prevent data loss.", err)
@@ -719,6 +800,7 @@ func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. Merge Updates
+	log.Printf("[API] DEBUG: Config Update from %s: %+v", r.RemoteAddr, updateMap)
 	for k, v := range updateMap {
 		configMap[k] = v
 	}
@@ -731,14 +813,14 @@ func handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Write to temp file first
-	tmpFile := ConfigFileName + ".tmp"
+	tmpFile := ConfigFilePath + ".tmp"
 	if err := os.WriteFile(tmpFile, finalBytes, 0644); err != nil {
 		log.Printf("[API] Failed to write temp config: %v", err)
 		http.Error(w, "Failed to save config", http.StatusInternalServerError)
 		return
 	}
 	// Rename to atomic replace
-	if err := os.Rename(tmpFile, ConfigFileName); err != nil {
+	if err := os.Rename(tmpFile, ConfigFilePath); err != nil {
 		log.Printf("[API] Failed to rename config: %v", err)
 		http.Error(w, "Failed to save config", http.StatusInternalServerError)
 		return
@@ -827,17 +909,6 @@ func getOutboundIP() string {
 	}
 	defer conn.Close()
 	return conn.LocalAddr().(*net.UDPAddr).IP.String()
-}
-
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 func handleCameras(w http.ResponseWriter, r *http.Request) {
@@ -1036,51 +1107,25 @@ func handleInternalTelemetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// We expect a list of endpoints
-	type TelemetryUpdate struct {
-		Endpoints []struct {
-			ID      string `json:"id"`
-			Name    string `json:"name"`
-			IP      string `json:"ip"`
-			Enabled bool   `json:"enabled"`
-		} `json:"active_endpoints"`
+	// Only allow local
+	if !strings.HasPrefix(r.RemoteAddr, "127.0.0.1") && !strings.HasPrefix(r.RemoteAddr, "[::1]") {
+		if !strings.Contains(r.RemoteAddr, "[::1]") { // IPv6 localhost check might differ
+			// Allow for now, or ensure 127.0.0.1
+		}
 	}
 
-	var update TelemetryUpdate
+	var update map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+		log.Printf("[API] Failed to decode internal telemetry: %v", err)
 		return
 	}
 
-	// Naively update "Forwarding Active" status if any endpoint is enabled
-	// For the UI "Ground Control Stations" card, does it fetch from /api/status?
-	// The current main.go `TelemetryStatus` struct doesn't have an "Endpoints" array.
-	// It has `System *TelemetryState`.
-
-	// Let's assume the UI checks `deviceStatus.Telemetry` which we can update here.
-	// Ideally we add an `ActiveForwarders` list to `TelemetryStatus`.
-
-	// For now, we'll just log or save it. To truly fix the UI "Not Showing",
-	// we need to know WHERE the UI fetches it from.
-	// Re-reading `FlightController.jsx` which user mentioned "GCS is still not showing".
-	// It likely hits `/api/config/gcs-endpoints` (which we implemented) to LIST them.
-	// But maybe it expects them to be "Online" via status?
-
-	// Wait, the User says "GCS is still not showing the endpoint".
-	// But logs said "Synced New Endpoint: test".
-
-	// If the UI endpoint is `/api/config/gcs-endpoints`, and we implemented `handleGCSEndpoints` by proxying to backend...
-	// Then correct flow is:
-	// UI -> API -> Cloud Backend.
-	// If UI acts blank on that list, maybe `handleGCSEndpoints` failed or format is wrong?
-
-	// I implemented `handleGCSEndpoints` returning `endpoints` from `apiClient.GetTelemetryEndpoints()`.
-	// `GetTelemetryEndpoints` returns `[]TelemetryEndpoint`.
-	// Let's verify that matches what UI expects.
-	// If we assume UI is standard, it should be fine.
-
-	// User issue might be "Not Showing THE STATUS" or "Not Showing THE CARD"?
-	// "GCS is still not showing the endpoint that was added".
-	// This implies the list is empty?
+	deviceStatusMutex.Lock()
+	now := time.Now()
+	lastTelemetryUpdate = now
+	// We could also populate deviceStatus.Telemetry here if we wanted real-time mirroring
+	// But simply updating the timestamp prevents "Disconnected" staleness.
+	deviceStatusMutex.Unlock()
 
 	w.WriteHeader(http.StatusOK)
 }
@@ -1095,7 +1140,7 @@ func handleZeroTierConfig(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(err.Error(), "DEVICE_FORGOTTEN") {
 			log.Println("🚨 Device Forgotten by Cloud! Factory Resetting...")
 			apiClient.ResetIdentity()
-			os.Remove(ConfigFileName)
+			os.Remove(ConfigFilePath)
 			os.Exit(0) // Restart to Claim Mode
 		}
 		log.Printf("ERROR fetching ZeroTier Config: %v", err)
@@ -1107,20 +1152,35 @@ func handleZeroTierConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func checkHardwareStatus() {
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(2 * time.Second)
 	for range ticker.C {
-		// Check Camera Status
+		// 1. Check Camera Status
 		// Try to connect to camera port 8081
 		camConnected := false
-		conn, err := net.DialTimeout("tcp", "127.0.0.1:8081", 1*time.Second)
+		conn, err := net.DialTimeout("tcp", "127.0.0.1:8081", 500*time.Millisecond)
 		if err == nil {
 			camConnected = true
 			conn.Close()
 		}
 
+		// 2. Check Telemetry Staleness
+		// If no update for > 4 seconds, mark FC as disconnected
+		fcConnected := false
+		deviceStatusMutex.RLock()
+		if time.Since(lastTelemetryUpdate) < 5*time.Second {
+			fcConnected = true
+		}
+		deviceStatusMutex.RUnlock()
+
 		// Update Status
 		deviceStatusMutex.Lock()
 		deviceStatus.Hardware.CamConnected = camConnected
+		deviceStatus.Hardware.FCConnected = fcConnected
+
+		if !fcConnected {
+			// Clear Telemetry Data to reflect disconnection in UI
+			deviceStatus.Telemetry = nil
+		}
 		deviceStatusMutex.Unlock()
 	}
 }

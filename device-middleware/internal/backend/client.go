@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	IdentityFile   = "identity.json"
+	IdentityFile   = "/etc/vyom/identity.json"
 	DefaultBaseURL = "https://backend.internetlinkpro.vyomgarud.com"
 )
 

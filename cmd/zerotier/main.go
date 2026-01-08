@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -92,9 +93,13 @@ func main() {
 
 		// 4. Auto-Join Logic
 		if desiredNetworkID != "" && desiredNetworkID != status.NetworkID {
-			log.Printf("🔄 ZeroTier Config Change/Mismatch! Joining %s...", desiredNetworkID)
-			out, err := runZeroTier("join", desiredNetworkID)
-			log.Printf("Join Result: %s (Err: %v)", out, err)
+			if isValidZeroTierID(desiredNetworkID) {
+				log.Printf("🔄 ZeroTier Config Change/Mismatch! Joining %s...", desiredNetworkID)
+				out, err := runZeroTier("join", desiredNetworkID)
+				log.Printf("Join Result: %s (Err: %v)", out, err)
+			} else {
+				log.Printf("⚠️ Invalid ZeroTier Network ID ignored: %s", desiredNetworkID)
+			}
 		}
 
 		time.Sleep(10 * time.Second)
@@ -193,4 +198,9 @@ func checkZeroTier(desiredID string) ZeroTierStatus {
 	log.Printf("[ZeroTier] Report: ID=%s State=%s IP=%s Peers=%d", status.NetworkID, status.State, status.IPAddress, len(status.Peers))
 
 	return status
+}
+
+func isValidZeroTierID(id string) bool {
+	matched, _ := regexp.MatchString(`^[0-9a-fA-F]{16}$`, id)
+	return matched
 }

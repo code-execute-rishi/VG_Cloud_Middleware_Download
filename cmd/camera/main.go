@@ -111,8 +111,9 @@ func runGStreamerPipeline() {
 		var width, height = 640, 480
 		var currentConfigRes = "640x480"
 		var selectedDevice = "/dev/video0" // Default
+		configPath := "/etc/vyom/config.json"
 
-		if data, err := os.ReadFile("demo_config.json"); err == nil {
+		if data, err := os.ReadFile(configPath); err == nil {
 			var cfg Config
 			if json.Unmarshal(data, &cfg) == nil {
 				// Resolution
@@ -152,17 +153,32 @@ func runGStreamerPipeline() {
 		// 3. Construct Source Pipeline
 		// NOTE: We do NOT use multipartmux here anymore. We act as the muxer in Go.
 		// We output RAW JPEG stream.
-		var cmdStr string
+		var gstArgs []string
 
 		if hasLibCamera {
 			// LibCamera (Raspberry Pi)
 			// Src -> Raw -> Tee -> (Scaling->Jpeg->FdSink) + (VP8->Cloud)
-			cmdStr = fmt.Sprintf(
-				"exec gst-launch-1.0 -q libcamerasrc camera-name=%s ! video/x-raw,width=%d,height=%d ! videoconvert ! "+
-					"tee name=t ! queue max-size-buffers=5 leaky=downstream ! videorate ! video/x-raw,framerate=15/1 ! videoscale ! video/x-raw,width=%d,height=%d ! jpegenc ! fdsink sync=false "+
-					"t. ! queue max-size-buffers=5 leaky=downstream ! videorate ! video/x-raw,framerate=15/1 ! vp8enc error-resilient=1 deadline=1 keyframe-max-dist=30 cpu-used=5 ! queue ! avmux_ivf ! tcpclientsink host=127.0.0.1 port=5600",
-				selectedDevice, width, height, width, height,
-			)
+			gstArgs = []string{
+				"-q", "libcamerasrc", fmt.Sprintf("camera-name=%s", selectedDevice),
+				"!", fmt.Sprintf("video/x-raw,width=%d,height=%d", width, height),
+				"!", "videoconvert",
+				"!", "tee", "name=t",
+				"!", "queue", "max-size-buffers=5", "leaky=downstream",
+				"!", "videorate",
+				"!", "video/x-raw,framerate=15/1",
+				"!", "videoscale",
+				"!", fmt.Sprintf("video/x-raw,width=%d,height=%d", width, height),
+				"!", "jpegenc",
+				"!", "fdsink", "sync=false",
+				"t.",
+				"!", "queue", "max-size-buffers=5", "leaky=downstream",
+				"!", "videorate",
+				"!", "video/x-raw,framerate=15/1",
+				"!", "vp8enc", "error-resilient=1", "deadline=1", "keyframe-max-dist=30", "cpu-used=5",
+				"!", "queue",
+				"!", "avmux_ivf",
+				"!", "tcpclientsink", "host=127.0.0.1", "port=5600",
+			}
 		} else if _, err := os.Stat(selectedDevice); err == nil {
 			format := formats[currentFormatIdx]
 			log.Printf("[Camera] Using Device: %s. Attempting Format: %s", selectedDevice, format.Name)
@@ -171,56 +187,120 @@ func runGStreamerPipeline() {
 				// MJPEG PASSTHROUGH (Parse -> Split)
 				// Local: JpegParse -> FdSink (Clean JPEGs)
 				// Cloud: JpegDec -> VP8
-				cmdStr = fmt.Sprintf(
-					"exec gst-launch-1.0 -q v4l2src device=%s ! image/jpeg,width=%d,height=%d,framerate=30/1 ! jpegparse ! "+
-						"tee name=t ! queue max-size-buffers=5 leaky=downstream ! fdsink sync=false "+
-						"t. ! queue max-size-buffers=5 leaky=downstream ! jpegdec ! videoconvert ! videorate ! video/x-raw,framerate=15/1 ! vp8enc error-resilient=1 deadline=1 keyframe-max-dist=30 cpu-used=5 ! queue ! avmux_ivf ! tcpclientsink host=127.0.0.1 port=5600",
-					selectedDevice, width, height,
-				)
+				gstArgs = []string{
+					"-q", "v4l2src", fmt.Sprintf("device=%s", selectedDevice),
+					"!", fmt.Sprintf("image/jpeg,width=%d,height=%d,framerate=30/1", width, height),
+					"!", "jpegparse",
+					"!", "tee", "name=t",
+					"!", "queue", "max-size-buffers=5", "leaky=downstream",
+					"!", "fdsink", "sync=false",
+					"t.",
+					"!", "queue", "max-size-buffers=5", "leaky=downstream",
+					"!", "jpegdec",
+					"!", "videoconvert",
+					"!", "videorate",
+					"!", "video/x-raw,framerate=15/1",
+					"!", "vp8enc", "error-resilient=1", "deadline=1", "keyframe-max-dist=30", "cpu-used=5",
+					"!", "queue",
+					"!", "avmux_ivf",
+					"!", "tcpclientsink", "host=127.0.0.1", "port=5600",
+				}
 			} else {
 				// YUY2/Raw -> Re-Encode
-				var baseSrc string
+				var baseSrcArgs []string
 				if format.Name == "YUY2" {
-					baseSrc = fmt.Sprintf("v4l2src device=%s ! video/x-raw,format=YUY2,width=%d,height=%d", selectedDevice, width, height)
+					baseSrcArgs = []string{
+						"v4l2src", fmt.Sprintf("device=%s", selectedDevice),
+						"!", "video/x-raw,format=YUY2," + fmt.Sprintf("width=%d,height=%d", width, height),
+					}
 				} else {
-					baseSrc = fmt.Sprintf("v4l2src device=%s ! decodebin ! videoconvert ! videoscale ! video/x-raw,width=%d,height=%d", selectedDevice, width, height)
+					baseSrcArgs = []string{
+						"v4l2src", fmt.Sprintf("device=%s", selectedDevice),
+						"!", "decodebin",
+						"!", "videoconvert",
+						"!", "videoscale",
+						"!", fmt.Sprintf("video/x-raw,width=%d,height=%d", width, height),
+					}
 				}
-				cmdStr = fmt.Sprintf(
-					"exec gst-launch-1.0 -q %s ! videoconvert ! videorate ! video/x-raw,framerate=15/1 ! "+
-						"tee name=t ! queue max-size-buffers=5 leaky=downstream ! jpegenc ! fdsink sync=false "+
-						"t. ! queue max-size-buffers=5 leaky=downstream ! vp8enc error-resilient=1 deadline=1 keyframe-max-dist=30 cpu-used=5 ! queue ! avmux_ivf ! tcpclientsink host=127.0.0.1 port=5600",
-					baseSrc,
+
+				gstArgs = append([]string{"-q"}, baseSrcArgs...)
+				gstArgs = append(gstArgs,
+					"!", "videoconvert",
+					"!", "videorate",
+					"!", "video/x-raw,framerate=15/1",
+					"!", "tee", "name=t",
+					"!", "queue", "max-size-buffers=5", "leaky=downstream",
+					"!", "jpegenc",
+					"!", "fdsink", "sync=false",
+					"t.",
+					"!", "queue", "max-size-buffers=5", "leaky=downstream",
+					"!", "vp8enc", "error-resilient=1", "deadline=1", "keyframe-max-dist=30", "cpu-used=5",
+					"!", "queue",
+					"!", "avmux_ivf",
+					"!", "tcpclientsink", "host=127.0.0.1", "port=5600",
 				)
 			}
 		} else {
 			// Test Source
-			cmdStr = fmt.Sprintf(
-				"exec gst-launch-1.0 -q videotestsrc is-live=true pattern=snow ! videoconvert ! videorate ! video/x-raw,framerate=15/1,width=%d,height=%d ! "+
-					"tee name=t ! queue max-size-buffers=5 leaky=downstream ! jpegenc ! fdsink sync=false "+
-					"t. ! queue max-size-buffers=5 leaky=downstream ! vp8enc error-resilient=1 deadline=1 keyframe-max-dist=30 cpu-used=5 ! queue ! avmux_ivf ! tcpclientsink host=127.0.0.1 port=5600",
-				width, height,
-			)
+			gstArgs = []string{
+				"-q", "videotestsrc", "is-live=true", "pattern=snow",
+				"!", "videoconvert",
+				"!", "videorate",
+				"!", fmt.Sprintf("video/x-raw,framerate=15/1,width=%d,height=%d", width, height),
+				"!", "tee", "name=t",
+				"!", "queue", "max-size-buffers=5", "leaky=downstream",
+				"!", "jpegenc",
+				"!", "fdsink", "sync=false",
+				"t.",
+				"!", "queue", "max-size-buffers=5", "leaky=downstream",
+				"!", "vp8enc", "error-resilient=1", "deadline=1", "keyframe-max-dist=30", "cpu-used=5",
+				"!", "queue",
+				"!", "avmux_ivf",
+				"!", "tcpclientsink", "host=127.0.0.1", "port=5600",
+			}
 		}
 
 		if safeMode {
 			log.Println("[Warn] Engaging SAFE MODE PIPELINE (Robust Fallback).")
 			if _, err := os.Stat("/dev/video0"); err == nil {
-				cmdStr = "exec gst-launch-1.0 -q v4l2src device=/dev/video0 ! image/jpeg,width=640,height=480 ! jpegparse ! fdsink sync=false"
+				gstArgs = []string{
+					"-q", "v4l2src", "device=/dev/video0",
+					"!", "image/jpeg,width=640,height=480",
+					"!", "jpegparse",
+					"!", "fdsink", "sync=false",
+				}
 			} else {
-				cmdStr = "exec gst-launch-1.0 -q videotestsrc is-live=true ! videoscale ! video/x-raw,width=640,height=480 ! jpegenc ! fdsink sync=false"
+				gstArgs = []string{
+					"-q", "videotestsrc", "is-live=true",
+					"!", "videoscale",
+					"!", "video/x-raw,width=640,height=480",
+					"!", "jpegenc",
+					"!", "fdsink", "sync=false",
+				}
 			}
 		}
 
-		cmd := exec.Command("sh", "-c", cmdStr)
+		cmd := exec.Command("gst-launch-1.0", gstArgs...)
 		cmd.Stderr = os.Stderr
 
 		// Stop Watcher Setup
 		stopWatcher := make(chan bool)
 		go func() {
-			initialStat, err := os.Stat("demo_config.json")
-			if err != nil {
-				return
+			configPath := "/etc/vyom/config.json"
+			log.Printf("[Camera] Starting Config Watcher on %s", configPath)
+
+			// Retry loop for initial stat (Wait for API to create file)
+			var initialStat os.FileInfo
+			var err error
+			for {
+				initialStat, err = os.Stat(configPath)
+				if err == nil {
+					break
+				}
+				log.Printf("[Camera] Watcher waiting for config file... (%v)", err)
+				time.Sleep(2 * time.Second)
 			}
+
 			initialTime := initialStat.ModTime()
 			ticker := time.NewTicker(2 * time.Second)
 			defer ticker.Stop()
@@ -229,7 +309,7 @@ func runGStreamerPipeline() {
 				case <-stopWatcher:
 					return
 				case <-ticker.C:
-					stat, err := os.Stat("demo_config.json")
+					stat, err := os.Stat(configPath)
 					if err == nil && !stat.ModTime().Equal(initialTime) {
 						log.Println("[Camera] [Config] Config File Changed! Triggering Hot Reload...")
 						if cmd.Process != nil {
@@ -311,7 +391,8 @@ func runGStreamerPipeline() {
 
 			if consecutiveFailures >= 2 {
 				// Fallback Logic
-				if !hasLibCamera && !strings.Contains(cmdStr, "videotestsrc") {
+				fullCmd := fmt.Sprintf("%v", gstArgs)
+				if !hasLibCamera && !strings.Contains(fullCmd, "videotestsrc") {
 					log.Println("[Warn] High-Res failed. Enabling Persistent SAFE MODE.")
 					safeMode = true
 					width, height = 640, 480
@@ -319,7 +400,7 @@ func runGStreamerPipeline() {
 					consecutiveFailures = 0
 					continue
 				}
-				if !hasLibCamera && !strings.Contains(cmdStr, "videotestsrc") {
+				if !hasLibCamera && !strings.Contains(fullCmd, "videotestsrc") {
 					currentFormatIdx = (currentFormatIdx + 1) % len(formats)
 					log.Printf("[Warn] Format failed. Switching to next format: %s", formats[currentFormatIdx].Name)
 					consecutiveFailures = 0

@@ -56,13 +56,13 @@ func reportStatus(state string, errStr string, room *lksdk.Room) {
 }
 
 func startDataRelayServer() {
-	addr, _ := net.ResolveUDPAddr("udp", ":5000")
+	addr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:5000")
 	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
-		log.Fatalf("[DataRelay] ❌ Failed to bind UDP 5000: %v", err)
+		log.Fatalf("[DataRelay] ❌ Failed to bind UDP 127.0.0.1:5000: %v", err)
 	}
 	defer conn.Close()
-	log.Println("[DataRelay] 🟢 Listening on UDP :5000 for Telemetry...")
+	log.Println("[DataRelay] 🟢 Listening on UDP 127.0.0.1:5000 for Telemetry...")
 
 	buf := make([]byte, 65535)
 	for {
@@ -86,10 +86,10 @@ func startDataRelayServer() {
 }
 
 func startVideoRelayServer() {
-	addr := ":5600"
+	addr := "127.0.0.1:5600"
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Fatalf("[VideoRelay] ❌ Failed to bind port 5600: %v", err)
+		log.Fatalf("[VideoRelay] ❌ Failed to bind %s: %v", addr, err)
 	}
 	defer ln.Close()
 	log.Printf("[VideoRelay] 🟢 Listening on %s for Camera Stream...", addr)

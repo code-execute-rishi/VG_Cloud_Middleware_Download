@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -24,6 +23,19 @@ const (
 type TelemetryConfig struct {
 	FCPort string `json:"fc_port"`
 	FCBaud int    `json:"fc_baud"`
+}
+
+// --- API Status Structs ---
+type APIState struct {
+	Armed bool   `json:"armed"`
+	Mode  string `json:"mode"`
+}
+type APIStatus struct {
+	Battery     *SysStatus `json:"battery"`
+	GPS         *GpsRaw    `json:"gps"`
+	HUD         *VfrHud    `json:"hud"`
+	System      *APIState  `json:"system"`
+	FCConnected bool       `json:"fc_connected"`
 }
 
 // --- LiveKit Telemetry Structs ---
@@ -82,8 +94,9 @@ var (
 	fwNodes = make(map[string]*gomavlib.Node)
 	fwMutex sync.Mutex
 
-	lastTelem  LiveKitTelemetry
-	telemMutex sync.Mutex
+	lastTelem     LiveKitTelemetry
+	lastHeartbeat time.Time
+	telemMutex    sync.Mutex
 )
 
 func main() {
@@ -91,16 +104,20 @@ func main() {
 
 	// 1. Fetch Config from API
 	var config TelemetryConfig
-	for {
-		resp, err := http.Get(API_URL + "/api/config/telemetry")
-		if err == nil && resp.StatusCode == 200 {
-			json.NewDecoder(resp.Body).Decode(&config)
-			resp.Body.Close()
-			break
+	fetchConfig := func() TelemetryConfig {
+		var cfg TelemetryConfig
+		for {
+			resp, err := http.Get(API_URL + "/api/config/telemetry")
+			if err == nil && resp.StatusCode == 200 {
+				json.NewDecoder(resp.Body).Decode(&cfg)
+				resp.Body.Close()
+				return cfg
+			}
+			log.Println("Waiting for API to be ready...")
+			time.Sleep(2 * time.Second)
 		}
-		log.Println("Waiting for API to be ready...")
-		time.Sleep(2 * time.Second)
 	}
+	config = fetchConfig()
 
 	// Apply Defaults
 	if config.FCPort == "" {
@@ -110,7 +127,97 @@ func main() {
 		config.FCBaud = 57600
 	}
 
-	// 2. Setup MAVLink Endpoints
+	// 2. Start Config Watcher (Exits on Change)
+	go func() {
+		ticker := time.NewTicker(3 * time.Second)
+		for range ticker.C {
+			newCfg := fetchConfig()
+			// Normalize defaults for comparison
+			if newCfg.FCPort == "" {
+				newCfg.FCPort = "auto"
+			}
+			if newCfg.FCBaud == 0 {
+				newCfg.FCBaud = 57600
+			}
+
+			if newCfg.FCPort != config.FCPort || newCfg.FCBaud != config.FCBaud {
+				log.Printf("🔄 Config Changed (Port: %s -> %s). Restarting...", config.FCPort, newCfg.FCPort)
+				os.Exit(0) // Systemd will restart us
+			}
+		}
+	}()
+
+	// 3. Start Status Writer Loop (Always Run)
+	// 3. Start Status Writer Loop (Always Run)
+	go func() {
+		// UDP Connection to LiveKit Relay
+		addr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:5000")
+		conn, err := net.DialUDP("udp", nil, addr)
+		if err != nil {
+			log.Printf("❌ Failed to dial LiveKit Relay: %v", err)
+		} else {
+			defer conn.Close()
+			log.Println("✅ UDP Telemetry Link Established (:5000)")
+		}
+
+		ticker := time.NewTicker(200 * time.Millisecond) // 5Hz
+		for range ticker.C {
+			telemMutex.Lock()
+			// Copy pointers (safe enough for now)
+			// Deep copy needed? Structs are small.
+			// Let's just use the global lastTelem directly for construction
+
+			// Check connectivity
+			connected := time.Since(lastHeartbeat) < 3*time.Second
+			if !connected {
+				lastTelem.Mode = "DISCONNECTED"
+			}
+
+			// --- 1. Disk Status Write (0.5Hz equiv check) ---
+			// We do this every loop but only write disk occasionally?
+			// No, let's just write disk status at 5Hz too OR keep separate loop.
+			// Re-using this loop is cleaner.
+
+			status := APIStatus{
+				Battery:     lastTelem.SysStatus,
+				GPS:         lastTelem.GpsRawInt,
+				HUD:         lastTelem.VfrHud,
+				FCConnected: connected,
+				System: &APIState{
+					Armed: lastTelem.Armed,
+					Mode:  lastTelem.Mode,
+				},
+			}
+
+			// Construct LiveKit Message
+			lkMsg := LiveKitDataMessage{
+				Type: "telemetry",
+				Data: lastTelem,
+			}
+			lkMsg.Data.Timestamp = time.Now().UnixMilli() // Current time
+			telemMutex.Unlock()
+
+			// Write to Disk (Local UI)
+			data, _ := json.Marshal(status)
+			os.MkdirAll("/tmp/vyom-status", 0777)
+			os.WriteFile("/tmp/vyom-status/telemetry.json", data, 0666)
+
+			// Send to LiveKit (Cloud)
+			if conn != nil {
+				if lkData, err := json.Marshal(lkMsg); err == nil {
+					conn.Write(lkData)
+				}
+			}
+		}
+	}()
+
+	// 4. Handle Disabled State
+	if config.FCPort == "disabled" {
+		log.Println("🛑 Telemetry Disabled (Idle Mode).")
+		select {} // Block forever (waiting for config change restart)
+	}
+
+	// 5. Setup MAVLink Endpoints
 	var endpoints []gomavlib.EndpointConf
 	if config.FCPort == "auto" {
 		log.Println("[Hardware] Auto-Detecting Flight Controller...")
@@ -139,6 +246,8 @@ func main() {
 		// Manual Config
 		if strings.HasPrefix(config.FCPort, "tcp:") {
 			endpoints = []gomavlib.EndpointConf{gomavlib.EndpointTCPClient{Address: strings.TrimPrefix(config.FCPort, "tcp:")}}
+		} else if strings.HasPrefix(config.FCPort, "udpin:") {
+			endpoints = []gomavlib.EndpointConf{gomavlib.EndpointUDPServer{Address: strings.TrimPrefix(config.FCPort, "udpin:")}}
 		} else if strings.HasPrefix(config.FCPort, "udp:") {
 			endpoints = []gomavlib.EndpointConf{gomavlib.EndpointUDPClient{Address: strings.TrimPrefix(config.FCPort, "udp:")}}
 		} else {
@@ -146,12 +255,12 @@ func main() {
 		}
 	}
 
-	// 3. Create Main Node
+	// 6. Create Main Node
 	node, err := gomavlib.NewNode(gomavlib.NodeConf{
 		Endpoints:   endpoints,
 		Dialect:     ardupilotmega.Dialect,
 		OutVersion:  gomavlib.V2,
-		OutSystemID: 255, // GCS ID
+		OutSystemID: 200, // GCS ID (Avoid 255 to prevent MAVProxy Loopback conflict)
 	})
 	if err != nil {
 		log.Fatalf("Failed to create MAVLink Node: %v", err)
@@ -160,12 +269,10 @@ func main() {
 
 	log.Println("✅ MAVLink Node Started. Listening for events...")
 
-	// Start Heartbeat & Stream Request Loop
+	// Start Heartbeat Loop (Keep sending GCS Heartbeats)
 	go func() {
 		ticker := time.NewTicker(1 * time.Second)
-		streamRequested := false
 		for range ticker.C {
-			// 1. Send Heartbeat to GCS/FC
 			node.WriteMessageAll(&ardupilotmega.MessageHeartbeat{
 				Type:           ardupilotmega.MAV_TYPE_GCS,
 				Autopilot:      ardupilotmega.MAV_AUTOPILOT_INVALID,
@@ -174,195 +281,15 @@ func main() {
 				SystemStatus:   ardupilotmega.MAV_STATE_ACTIVE,
 				MavlinkVersion: 3,
 			})
-
-			// 2. Request Data Stream (only once or retry)
-			if !streamRequested {
-				log.Println("📡 Requesting Data Stream from FC...")
-				// ID 0, Comp 0 targets all
-				node.WriteMessageAll(&ardupilotmega.MessageRequestDataStream{
-					TargetSystem:    0,
-					TargetComponent: 0,
-					ReqStreamId:     uint8(ardupilotmega.MAV_DATA_STREAM_ALL),
-					ReqMessageRate:  4, // 4Hz
-					StartStop:       1,
-				})
-				// Re-send every 5s until we get data? For now, just spam it a few times or rely on 1Hz loop if needed.
-				// Better: Just reset flag if we detect no data.
-				// Simple approach: Send it every 10s to ensure connection.
-			}
-		}
-	}()
-
-	// Re-request loop
-	go func() {
-		for {
-			time.Sleep(10 * time.Second)
-			node.WriteMessageAll(&ardupilotmega.MessageRequestDataStream{
-				TargetSystem:    0,
-				TargetComponent: 0,
-				ReqStreamId:     uint8(ardupilotmega.MAV_DATA_STREAM_ALL),
-				ReqMessageRate:  4, // 4 Hz
-				StartStop:       1,
-			})
-		}
-	}()
-
-	// Write Hardware Status (FC Connected)
-	// API expects: {"fc_connected": true, "cam_connected": ...}
-	// Note: We shouldn't overwrite checkHardwareStatus from API if possible.
-	// Actually, API reads "HardwareStatusFile" which is monolithic.
-	// If API writes cam_connected and attempts to read, we have a race/overwrite issue if we write ONLY fc_connected.
-	// Strategy: vyom-telemetry creates a separate status file? No, API expects one.
-	// Better Strategy: API manages the aggregate file.
-	// BUT API reads from file.
-	// Let's create a dedicated file for telemetry service connection status, e.g., "telemetry_meta.json"?
-	// Or just update the loop in API to look for specific file?
-	// For now, let's just make sure Telemetry Data is written.
-	// The Dashboard "Flight Controller" status checks "fc_connected".
-	// API sets "fc_connected" if it reads HardwareStatusFile.
-	// We should write to `hardware.json` as well.
-
-	go func() {
-		// Periodically assert FC connection in hardware.json
-		// CAUTION: This might race with API's camera check if they write to same file.
-		// Ideally API should merge, but it just reads/writes entire structs.
-		// Workaround: We will NOT write hardware.json here to avoid conflict.
-		// Instead, we update current API logic to infer FC Connected if Telemetry Data is recent.
-		// OR we rely on `vyom-telemetry` to be the source of truth for FC.
-
-		// For now, let's proceed with just updating `telemetry.json`.
-		// I will modify API to set IsConnected based on Telemetry != nil.
-	}()
-
-	// 4. UDP Client for LiveKit Relay
-	udpAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:5000")
-	udpConn, _ := net.DialUDP("udp", nil, udpAddr)
-
-	// 5. GCS Endpoint Sync Loop
-	go func() {
-		client := &http.Client{Timeout: 5 * time.Second}
-		ticker := time.NewTicker(5 * time.Second)
-		for range ticker.C {
-			resp, err := client.Get(API_URL + "/api/config/gcs-endpoints")
-			if err != nil {
-				continue
-			}
-
-			type Endpoint struct {
-				ID        string `json:"id"`
-				Host      string `json:"host"`
-				Port      int    `json:"port"`
-				Enabled   bool   `json:"enabled"`
-				Telemetry bool   `json:"enable_telemetry"`
-			}
-			var eps []Endpoint
-			json.NewDecoder(resp.Body).Decode(&eps)
-			resp.Body.Close()
-
-			fwMutex.Lock()
-			currentIDs := make(map[string]bool)
-			for _, ep := range eps {
-				if !ep.Enabled || !ep.Telemetry {
-					continue
-				}
-				id := ep.ID
-				currentIDs[id] = true
-
-				if _, exists := fwNodes[id]; !exists {
-					log.Printf("Adding GCS Forward: %s (%s:%d)", id, ep.Host, ep.Port)
-					addr := fmt.Sprintf("%s:%d", ep.Host, ep.Port)
-					// GCS is listening, so we are a Client sending to them?
-					// Usually forwarding to GCS means sending UDP packets to their listening port.
-					// EndpointUDPClient sends to a destination.
-					n, err := gomavlib.NewNode(gomavlib.NodeConf{
-						Endpoints:   []gomavlib.EndpointConf{gomavlib.EndpointUDPClient{Address: addr}},
-						Dialect:     ardupilotmega.Dialect,
-						OutVersion:  gomavlib.V2,
-						OutSystemID: 254, // Proxy ID
-					})
-					if err == nil {
-						fwNodes[id] = n
-					}
-				}
-			}
-			// Cleanup
-			for id, n := range fwNodes {
-				if !currentIDs[id] {
-					log.Printf("Removing GCS Forward: %s", id)
-					n.Close()
-					delete(fwNodes, id)
-				}
-			}
-			fwMutex.Unlock()
-		}
-	}()
-
-	// 6. LiveKit Sender Loop (5Hz Rate Limit)
-	// 6. LiveKit Sender Loop (5Hz Rate Limit) & Local Status File Write (1Hz)
-	go func() {
-		lkTicker := time.NewTicker(200 * time.Millisecond)
-		fileTicker := time.NewTicker(1 * time.Second)
-		statusDir := "/tmp/vyom-status"
-		statusFile := statusDir + "/telemetry.json"
-		os.MkdirAll(statusDir, 0777)
-
-		for {
-			select {
-			case <-lkTicker.C:
-				telemMutex.Lock()
-				t := lastTelem
-				t.Timestamp = time.Now().UnixMilli()
-				telemMutex.Unlock()
-
-				if udpConn != nil {
-					msg := LiveKitDataMessage{Type: "telemetry", Data: t}
-					b, _ := json.Marshal(msg)
-					udpConn.Write(b)
-				}
-			case <-fileTicker.C:
-				telemMutex.Lock()
-				t := lastTelem
-				telemMutex.Unlock()
-
-				// Map to API Struct (TelemetryStatus)
-				// API expects:
-				// type TelemetryStatus struct {
-				// 	Battery *SysStatus      `json:"battery"`
-				//  GPS     *GpsRaw         `json:"gps"`
-				// 	HUD     *VfrHud         `json:"hud"`
-				// 	System  *TelemetryState `json:"system"`
-				// }
-				type TelemetryState struct {
-					Armed bool   `json:"armed"`
-					Mode  string `json:"mode"`
-				}
-				type APIStatus struct {
-					Battery *SysStatus      `json:"battery"`
-					GPS     *GpsRaw         `json:"gps"`
-					HUD     *VfrHud         `json:"hud"`
-					System  *TelemetryState `json:"system"`
-				}
-
-				apiStatus := APIStatus{
-					Battery: t.SysStatus,
-					GPS:     t.GpsRawInt,
-					HUD:     t.VfrHud,
-					System: &TelemetryState{
-						Armed: t.Armed,
-						Mode:  t.Mode,
-					},
-				}
-
-				if data, err := json.Marshal(apiStatus); err == nil {
-					os.WriteFile(statusFile, data, 0666)
-				}
-			}
 		}
 	}()
 
 	// 7. Event Loop
+	streamRequested := false
 	for evt := range node.Events() {
-		if frm, ok := evt.(*gomavlib.EventFrame); ok {
+		switch e := evt.(type) {
+		case *gomavlib.EventFrame:
+			frm := e
 			// Forwarding
 			fwMutex.Lock()
 			for _, n := range fwNodes {
@@ -373,8 +300,25 @@ func main() {
 			// Parsing
 			msg := frm.Message()
 			telemMutex.Lock()
+			lastHeartbeat = time.Now() // Update Heartbeat on ANY message
+			telemMutex.Unlock()
+
+			// Process Message
+			telemMutex.Lock()
 			switch m := msg.(type) {
 			case *ardupilotmega.MessageHeartbeat:
+				if !streamRequested {
+					log.Printf("❤️ [Telemetry] Heartbeat Received from SysID:%d! Requesting Data Stream...", frm.SystemID())
+					// Request Data Stream NOW that we have a route
+					node.WriteMessageAll(&ardupilotmega.MessageRequestDataStream{
+						TargetSystem:    frm.SystemID(),
+						TargetComponent: frm.ComponentID(),
+						ReqStreamId:     uint8(ardupilotmega.MAV_DATA_STREAM_ALL),
+						ReqMessageRate:  4, // 4Hz
+						StartStop:       1,
+					})
+					streamRequested = true
+				}
 				lastTelem.Armed = (m.BaseMode & ardupilotmega.MAV_MODE_FLAG_SAFETY_ARMED) != 0
 				// custom mode mapping is complex, simple string for now
 				if lastTelem.Armed {
@@ -421,6 +365,21 @@ func main() {
 				lastTelem.VfrHud.Climb = m.Climb
 			}
 			telemMutex.Unlock()
+
+		case *gomavlib.EventParseError:
+			log.Printf("⚠️ MAVLink Parse Error: %v", e.Error)
+
+		case *gomavlib.EventStreamRequested:
+			log.Printf("ℹ️ Stream Requested")
+
+		case *gomavlib.EventChannelOpen:
+			log.Printf("✅ Channel Opened")
+
+		case *gomavlib.EventChannelClose:
+			log.Printf("❌ Channel Closed")
+
+		default:
+			log.Printf("❓ Unknown MAVLink Event: %T", e)
 		}
 	}
 }
