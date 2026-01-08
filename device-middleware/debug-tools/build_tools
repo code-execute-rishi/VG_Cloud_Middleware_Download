@@ -1,9 +1,0 @@
-#!/bin/bash
-
-# Build the serial dump tool for ARM64 (RPi)
-echo "Building serial_dump for ARM64..."
-cd "$(dirname "$0")/serial_dump"
-GOOS=linux GOARCH=arm64 go build -o ../serial_dump_tool
-cd ..
-
-echo "Build complete: ./debug-tools/serial_dump_tool"
